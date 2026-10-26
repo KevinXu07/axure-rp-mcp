@@ -56,8 +56,9 @@ class AxureError(RuntimeError):
 
 
 class Axure:
-    def __init__(self, port: int | None = None, document_id: str = "active", timeout: float = 180.0):
-        self.b = Bridge(port, timeout=timeout).connect()
+    def __init__(self, port: int | None = None, document_id: str = "active", timeout: float = 180.0,
+                 *, bridge: Bridge | None = None):
+        self.b = bridge if bridge is not None else Bridge(port, timeout=timeout).connect()
         self.document_id = document_id
         self._svc: int | None = None
         self._client: int | None = None
@@ -381,8 +382,7 @@ class Axure:
         out = []
         for handle in self._collect_handles(self.objects(package), deep):
             info = self.widget_info(handle)
-            if info.get("Name"):
-                out.append(info)
+            out.append(info)
         return out
 
     def _collect_handles(self, objects: int, deep: bool = False, depth: int = 0) -> list[int]:
@@ -448,6 +448,9 @@ class Axure:
         between widgets, so in-place edits leak onto every widget using the same default style."""
         return self.b.ctor("IHVp.uHV0", [{"$h": self._colour(self.b, hex_or_rgb)}])["$h"]
 
+    def _style_handle(self, widget: int) -> int:
+        return self.b.invoke_on(widget, "vJOH")["$h"]
+
     def style(self, package: int, name: str = "", handle: int | None = None, **options) -> dict:
         """Set visual style properties on one widget.
 
@@ -456,7 +459,7 @@ class Axure:
         line_spacing, letter_spacing, padding (list of 1-4), border_visible, rotations.
         """
         widget = self.resolve_widget(package, name, handle)
-        style = self.b.invoke_on(widget, "vJOH")["$h"]
+        style = self._style_handle(widget)
         applied: dict = {}
 
         def put(prop, value):
@@ -521,7 +524,8 @@ class Axure:
         summary = {}
         for prop in ("FontName", "FontSize", "Bold", "Italic", "Underline",
                      "Opacity", "CornerRadius", "BorderWidth", "HorizontalAlignment",
-                     "VerticalAlignment", "LineSpacing"):
+                     "VerticalAlignment", "LineSpacing", "CharacterSpacing", "Rotation",
+                     "PaddingLeft", "PaddingTop", "PaddingRight", "PaddingBottom"):
             try:
                 summary[prop] = self.b.get_on(style, prop)
             except BridgeError:
@@ -555,7 +559,7 @@ class Axure:
 
     def widget_style(self, package: int, name: str = "", handle: int | None = None) -> dict:
         widget = self.resolve_widget(package, name, handle)
-        return self._style_summary(self.b.invoke_on(widget, "vJOH")["$h"])
+        return self._style_summary(self._style_handle(widget))
 
     # ---------- interactions ----------
 

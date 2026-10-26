@@ -28,11 +28,18 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 （上图是 Axure 自己的渲染器输出的，见 `analysis/final-render.png`）
 
+## 平台支持
+
+Windows 使用原有的 37 个工具。macOS 新增独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 / .NET 8.0.11** 上通过真实 MCP 调用与保存后重启读回验证：支持 **19 个工具、16 类控件创建**。Mac 的高级交互、渲染、备注、撤销等功能尚未适配，不会在 `tools/list` 中宣称可用。其他 Mac 版本会明确报版本不支持。
+
+安装、验证脚本、逐项限制和修复记录见 **[docs/MACOS.md](docs/MACOS.md)**。下方完整能力矩阵是上游 Windows 的验证结果，不代表 Mac 的全部能力。
+
 ## 工具
 
 | 工具 | 作用 |
 | --- | --- |
-| `axure_status` | 桥是否在线、当前打开的文档 || `axure_list_pages` / `axure_page_tree` | 页面列表 / 完整站点树（含文件夹） |
+| `axure_status` | 桥是否在线、当前打开的文档 |
+| `axure_list_pages` / `axure_page_tree` | 页面列表 / 完整站点树（含文件夹） |
 | `axure_create_page` / `axure_create_folder` | 新建页面 / 文件夹（可嵌套） |
 | `axure_rename_page` / `axure_delete_page` / `axure_move_page` | 改名 / 删除 / 移动（重排顺序） |
 | `axure_get_page` | 页面上所有控件的几何、文字、可见性 |
@@ -63,7 +70,7 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 > 共 28 步，并附重启后的逐项复查结果。复现：`python tools/demo_v2.py`。
 
 
-## 安装
+## 安装（Windows；macOS 见上方专用说明）
 
 需要：
 
@@ -77,7 +84,7 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 编译注入桥：
 
 ```powershell
-dotnet build bridge\AxureBridge.csproj -c Debug      # 桥要自己编译，仓库里不带二进制
+dotnet build bridge\AxureBridge.csproj -c Debug -f net10.0      # 桥要自己编译，仓库里不带二进制
 copy bridge\bin\Debug\net10.0\AxureBridge.dll bridge\dist\AxureBridge.dll
 # 注意：axure-hook.ps1 注入的是 Debug 产物；改了桥代码一定要重新 build，
 #      否则跑的还是旧桥（会报 "method ... not found" 这种莫名其妙的错）
@@ -122,7 +129,7 @@ $env:DOTNET_STARTUP_HOOKS = "<仓库路径>\bridge\dist\AxureBridge.dll"
 
 ```powershell
 cd <仓库路径>
-python tools\axure-hook.ps1 -OpenFile 你的文件.rp   # 或直接让 MCP 自动拉起
+powershell -ExecutionPolicy Bypass -File tools\axure-hook.ps1 -OpenFile 你的文件.rp   # 或直接让 MCP 自动拉起
 python tools\regression_ascii.py                   # 回归自检
 python tools\demo_v2.py                            # 从零生成一个演示原型
 ```

@@ -21,6 +21,7 @@ public static class Bridge
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = false,
+        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
@@ -219,6 +220,8 @@ public static class Bridge
             ["entry"] = asm?.GetName().Name,
             ["entryPath"] = asm?.Location,
             ["clr"] = Environment.Version.ToString(),
+            ["appVersion"] = asm?.GetName().Version?.ToString(),
+            ["platform"] = OperatingSystem.IsMacOS() ? "macos" : OperatingSystem.IsWindows() ? "windows" : "other",
             ["thread"] = Thread.CurrentThread.ManagedThreadId
         };
     }
@@ -624,6 +627,7 @@ public static class Bridge
             var arr = new JsonArray();
             try
             {
+                if (OperatingSystem.IsMacOS()) return MacDocs();
                 var mgrType = ResolveType("M98");
                 var mgr = mgrType.GetMethod("k9y", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
                     ?.Invoke(null, null);
@@ -655,6 +659,36 @@ public static class Bridge
             catch (Exception ex) { return new JsonArray(new JsonObject { ["error"] = ex.Message }); }
             return arr;
         });
+    }
+
+    private static JsonNode MacDocs()
+    {
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        var controller = ResolveType("MCocoa.NSDocumentController")
+            .GetMethod("sharedDocumentController", Type.EmptyTypes).Invoke(null, null);
+        var current = controller.GetType().GetMethod("currentDocument", flags)?.Invoke(controller, null);
+        var activeClient = current?.GetType().GetProperty("Client", flags)?.GetValue(current);
+        var documents = controller.GetType().GetMethod("documents", flags).Invoke(controller, null);
+        var count = Convert.ToUInt64(documents.GetType().GetMethod("count").Invoke(documents, null));
+        var arr = new JsonArray();
+        for (ulong i = 0; i < count; i++)
+        {
+            var nativeDoc = documents.GetType().GetMethod("objectAtIndex").Invoke(documents, new object[] { i });
+            var client = nativeDoc.GetType().GetProperty("Client", flags)?.GetValue(nativeDoc);
+            if (client == null) continue;
+            var doc = client.GetType().GetProperty("Document", flags)?.GetValue(client);
+            var file = client.GetType().GetProperty("CurrentFile", flags)?.GetValue(client);
+            arr.Add(new JsonObject
+            {
+                ["clientType"] = client.GetType().FullName,
+                ["isActive"] = ReferenceEquals(client, activeClient),
+                ["handle"] = HandleTable.Add(client),
+                ["docHandle"] = doc == null ? null : HandleTable.Add(doc),
+                ["fileName"] = file?.GetType().GetMethod("fIed", flags)?.Invoke(file, null)?.ToString(),
+                ["displayName"] = nativeDoc.GetType().GetMethod("displayName", flags)?.Invoke(nativeDoc, null)?.ToString()
+            });
+        }
+        return arr;
     }
 
     /// <summary>Stable per-object identity so callers can tell "same live object" from "fresh copy".</summary>

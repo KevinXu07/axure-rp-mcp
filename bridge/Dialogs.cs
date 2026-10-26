@@ -47,6 +47,7 @@ internal static class Dialogs
     public static List<(IntPtr Handle, string Title, string Text)> Find()
     {
         var found = new List<(IntPtr, string, string)>();
+        if (!OperatingSystem.IsWindows()) return found;
         EnumWindows((hWnd, _) =>
         {
             try

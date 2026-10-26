@@ -17,8 +17,10 @@ import json
 import os
 import sys
 import traceback
+import math
+import copy
 
-from .client import BridgeError, discover
+from .client import Bridge, BridgeError, discover
 from .lock import bridge_lock
 from .ops import WIDGET_TYPES, Axure, AxureError
 
@@ -593,6 +595,22 @@ def _json(value) -> dict:
 _CONNECTION: dict = {"app": None}
 
 
+def _connect_app() -> Axure:
+    bridge = Bridge().connect()
+    try:
+        info = bridge.ping()
+        adapter = Axure
+        if info.get("entry") == "Client.Mac":
+            if info.get("appVersion") != "11.0.0.4137":
+                raise AxureError("unsupported Mac Axure version; adapter verified only on 11.0.0.4137; rebuild the bridge if appVersion is missing")
+            from .macos import MacAxure
+            adapter = MacAxure
+        return adapter(bridge=bridge)
+    except Exception:
+        bridge.close()
+        raise
+
+
 def _app() -> Axure:
     """Reuse one bridge connection across tool calls.
 
@@ -612,7 +630,7 @@ def _app() -> Axure:
                 pass
             _CONNECTION["app"] = None
     try:
-        app = Axure()
+        app = _connect_app()
     except Exception as exc:  # noqa: BLE001 - bridge missing: try to bring Axure up once
         if os.environ.get("AXURE_AUTO_LAUNCH", "1") == "0" or not _looks_like_bridge_down(exc):
             raise
@@ -624,8 +642,8 @@ def _app() -> Axure:
         try:
             launch(open_file=reopen)
         except Exception as launch_exc:  # noqa: BLE001 - report the original problem
-            raise exc from launch_exc
-        app = Axure()
+            raise launch_exc from exc
+        app = _connect_app()
         # Do NOT call open_file() here: loading a document while the fresh window is still
         # initialising blocks until the bridge times out (observed: 190s). The remembered path is
         # exposed by axure_status instead, so the caller can reopen it explicitly.
@@ -641,7 +659,8 @@ def _app() -> Axure:
 def _looks_like_bridge_down(exc: Exception) -> bool:
     text = f"{type(exc).__name__}: {exc}".lower()
     return any(needle in text for needle in
-               ("connection refused", "connectionrefused", "connection reset", "timed out", "timeout"))
+               ("connection refused", "connectionrefused", "connection reset", "timed out", "timeout",
+                "bridge closed the connection", "broken pipe"))
 
 
 def _reset_connection() -> None:
@@ -666,6 +685,8 @@ _HINTS = (
 def _hint(message: str) -> str:
     for needle, text in _HINTS:
         if needle.lower() in message.lower():
+            if sys.platform == "darwin":
+                text = text.replace("tools/axure-hook.ps1", "python3 -m axure_mcp.launcher")
             return " — " + text
     return ""
 
@@ -673,32 +694,45 @@ def _hint(message: str) -> str:
 def _validate_args(name: str, args: dict) -> None:
     """Reject bad arguments with a readable message instead of a Python TypeError."""
     schema = (_SCHEMAS.get(name) or {}).get("inputSchema") or {}
-    props = schema.get("properties") or {}
-    required = schema.get("required") or []
-    missing = [key for key in required if key not in args]
-    if missing:
-        raise AxureError(f"missing required argument(s): {', '.join(missing)}")
-    if schema.get("additionalProperties") is False:
-        unknown = [key for key in args if key not in props]
-        if unknown:
-            raise AxureError(f"unknown argument(s): {', '.join(unknown)}; "
-                             f"accepted: {', '.join(sorted(props)) or '(none)'}")
-    for key, value in args.items():
-        spec = props.get(key) or {}
-        allowed = spec.get("enum")
-        if allowed and value not in allowed:
-            raise AxureError(f"{key}={value!r} is not one of {allowed}")
-        kind = spec.get("type")
-        checks = {
-            "string": lambda v: isinstance(v, str),
-            "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-            "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
-            "boolean": lambda v: isinstance(v, bool),
-            "array": lambda v: isinstance(v, list),
-            "object": lambda v: isinstance(v, dict),
-        }
-        if kind in checks and value is not None and not checks[kind](value):
-            raise AxureError(f"{key} should be {kind}, got {type(value).__name__}")
+    _validate_value(args, schema, "arguments")
+
+
+def _validate_value(value, spec, path):
+    kind = spec.get("type")
+    checks = {
+        "string": lambda v: isinstance(v, str),
+        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool),
+        "array": lambda v: isinstance(v, list),
+        "object": lambda v: isinstance(v, dict),
+    }
+    if kind in checks and not checks[kind](value):
+        raise AxureError(f"{path} should be {kind}, got {type(value).__name__}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise AxureError(f"{path} must be finite")
+    if "enum" in spec and value not in spec["enum"]:
+        raise AxureError(f"{path}={value!r} is not one of {spec['enum']}")
+    for keyword, compare in (("minimum", lambda a,b: a < b), ("maximum", lambda a,b: a > b)):
+        if keyword in spec and compare(value, spec[keyword]):
+            raise AxureError(f"{path} violates {keyword}={spec[keyword]}")
+    if isinstance(value, dict):
+        props = spec.get("properties", {})
+        missing = [key for key in spec.get("required", []) if key not in value]
+        if missing:
+            raise AxureError(f"{path}: missing required argument(s): {', '.join(missing)}")
+        unknown = set(value) - set(props)
+        if spec.get("additionalProperties") is False and unknown:
+            raise AxureError(f"{path}: unknown argument(s): {', '.join(sorted(unknown))}")
+        for key, item in value.items():
+            _validate_value(item, props.get(key, {}), f"{path}.{key}")
+    if isinstance(value, list):
+        if len(value) < spec.get("minItems", 0):
+            raise AxureError(f"{path} has too few items")
+        if "maxItems" in spec and len(value) > spec["maxItems"]:
+            raise AxureError(f"{path} has too many items")
+        for index, item in enumerate(value):
+            _validate_value(item, spec.get("items", {}), f"{path}[{index}]")
 
 
 def _pages(app: Axure) -> list[dict]:
@@ -729,23 +763,31 @@ def _open(app: Axure, page_id: str | None, page_name: str | None) -> tuple[int, 
 
 # ---------------------------------------------------------------- tools
 
+def _supported_tools(app):
+    from .macos import MacAxure, SUPPORTED_TOOLS
+    return SUPPORTED_TOOLS if isinstance(app, MacAxure) else HANDLERS.keys()
+
+
 def tool_axure_status(_args: dict) -> dict:
     info = discover() or {}
     from .state import last_file
     try:
         app = _app()
+        info = discover() or {}
         doc = app._doc()
         pages = _pages(app)
         return _json({
             "remembered_file": last_file(),
+            "runtime": app.b.ping(),
+            "supported_tools": sorted(_supported_tools(app)),
             "bridge": {"port": info.get("port"), "pid": info.get("pid")},
-            "document": {"file": doc.get("fileName"), "name": doc.get("displayName")},
+            "document": {"file": app.file_name(), "name": doc.get("displayName")},
             "pages": len(pages),
             "page_names": [p["name"] for p in pages][:20],
         })
-    except (BridgeError, AxureError) as exc:
-        return _json({"remembered_file": last_file(),
-                      "bridge": {"port": info.get("port")}, "error": str(exc)})
+    except (BridgeError, AxureError, OSError) as exc:
+        return {"content": [_json({"remembered_file": last_file(),
+                "bridge": {"port": info.get("port")}, "error": str(exc) + _hint(str(exc))})], "isError": True}
 
 
 def tool_axure_list_pages(_args: dict) -> dict:
@@ -776,8 +818,8 @@ def tool_axure_add_widget(args: dict) -> dict:
         text=args.get("text"),
         x=float(args.get("x", 0) or 0),
         y=float(args.get("y", 0) or 0),
-        width=float(args.get("width", 160) or 160),
-        height=float(args.get("height", 40) or 40),
+        width=float(args.get("width", 160)),
+        height=float(args.get("height", 40)),
     )
     info = app.widget_info(handle)
     app.save(package)
@@ -1118,6 +1160,16 @@ HANDLERS = {
 }
 
 
+for _tool in TOOLS:
+    for _key, _spec in _tool["inputSchema"].get("properties", {}).items():
+        if _key in {"width", "height", "border_width", "corner_radius", "font_size", "wait_ms", "index"}:
+            _spec["minimum"] = 0
+        if _key == "max_dimension":
+            _spec.update(minimum=1, maximum=16384)
+        if _key == "names":
+            _spec["minItems"] = 1
+
+
 _SCHEMAS: dict = {tool["name"]: tool for tool in TOOLS}
 
 
@@ -1137,6 +1189,19 @@ def _error(msg_id, code: int, message: str) -> None:
 
 
 def handle_request(request: dict) -> None:
+    if not isinstance(request, dict):
+        _error(None, -32600, "request must be an object")
+        return
+    msg_id = request.get("id")
+    if (request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str)
+            or ("id" in request and (isinstance(msg_id, bool) or not isinstance(msg_id, (str, int, type(None)))))):
+        _error(None, -32600, "invalid JSON-RPC request")
+        return
+    if "id" not in request:
+        return  # JSON-RPC notifications never receive a response
+    if "params" in request and not isinstance(request["params"], dict):
+        _error(msg_id, -32602, "params must be an object")
+        return
     method = request.get("method")
     msg_id = request.get("id")
     params = request.get("params") or {}
@@ -1162,15 +1227,23 @@ def handle_request(request: dict) -> None:
         return
 
     if method == "tools/list":
-        _result(msg_id, {"tools": TOOLS})
+        tools = TOOLS
+        if sys.platform == "darwin":
+            from .macos import SUPPORTED_TOOLS, SUPPORTED_WIDGETS
+            tools = copy.deepcopy([t for t in TOOLS if t["name"] in SUPPORTED_TOOLS])
+            for tool in tools:
+                if tool["name"] == "axure_add_widget":
+                    tool["inputSchema"]["properties"]["kind"]["enum"] = sorted(SUPPORTED_WIDGETS)
+                    tool["description"] += " Mac: direct model insertion does not create an undo entry."
+        _result(msg_id, {"tools": tools})
         return
 
     if method == "tools/call":
         name = params.get("name")
-        if name not in HANDLERS:
+        if not isinstance(name, str) or name not in HANDLERS:
             _error(msg_id, -32602, f"unknown tool: {name}")
             return
-        args = params.get("arguments") or {}
+        args = params.get("arguments", {})
         handler = HANDLERS.get(name)
         if handler is None:
             _error(msg_id, -32602, f"unknown tool: {name}")
@@ -1180,6 +1253,10 @@ def handle_request(request: dict) -> None:
             # serialise across sessions: one call may switch the window to its page, and a
             # concurrent call from another process would otherwise write to the wrong page
             with bridge_lock():
+                if name != "axure_status":
+                    app = _app()
+                    if name not in _supported_tools(app):
+                        raise AxureError(f"{name} is not supported by the Mac 11.0.0.4137 adapter; no changes made")
                 payload = handler(args)
             if "content" not in payload:
                 payload = {"content": [payload]}
@@ -1202,28 +1279,20 @@ def handle_request(request: dict) -> None:
 
 
 def main() -> int:
-    if os.environ.get("AXURE_AUTO_LAUNCH", "1") != "0":
-        try:
-            from .launcher import bridge_alive, launch
-            if not bridge_alive():
-                launch()
-        except Exception as exc:  # noqa: BLE001 - the tool calls will report the real problem
-            print(f"[axure-mcp] auto-launch skipped: {exc}", file=sys.stderr)
-
+    # MCP stdio is UTF-8, including on Windows with a legacy console code page.
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         try:
-            request = json.loads(line)
+            request = json.loads(line, parse_constant=lambda v: (_ for _ in ()).throw(ValueError(v)))
         except ValueError:
             _error(None, -32700, "parse error")
             continue
-        if isinstance(request, list):
-            for item in request:
-                handle_request(item)
-        else:
-            handle_request(request)
+        handle_request(request)
     return 0
 
 

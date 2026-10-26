@@ -1,78 +1,71 @@
-"""Cross-process lock around Axure operations.
-
-Two MCP client sessions (two editors, or a script plus an IDE) both talk to the same Axure process.
-Each tool call opens the page it is about to edit, so without a lock one session can switch the
-window to its page and the other session's write lands on the wrong page. The lock is a file lock so
-it also covers separate server processes.
-"""
+"""Re-entrant thread and process lock for complete Axure tool operations."""
 from __future__ import annotations
 
 import contextlib
 import os
 import sys
+import threading
 import time
 
-LOCK_PATH = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
-                         "Axure", "axure-mcp.lock")
+from .paths import data_dir
+
+LOCK_PATH = os.path.join(data_dir(), 'axure-mcp.lock')
+_THREAD_LOCK = threading.RLock()
+_LOCAL = threading.local()
 
 
-def lock_path() -> str:
+def lock_path():
     os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
     return LOCK_PATH
 
 
-_DEPTH = {"n": 0}
-
-
 @contextlib.contextmanager
 def bridge_lock(timeout: float = 180.0, poll: float = 0.05):
-    """Serialise access to the Axure bridge across threads and processes (re-entrant per process)."""
-    if _DEPTH["n"] > 0:
-        # already held by this process - Windows locks are per handle, so nesting must not re-lock
-        _DEPTH["n"] += 1
-        try:
-            yield
-        finally:
-            _DEPTH["n"] -= 1
-        return
-
-    path = lock_path()
-    handle = open(path, "a+b")
-    acquired = False
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
+    if not _THREAD_LOCK.acquire(timeout=max(0, timeout)):
+        raise TimeoutError('another thread is holding the Axure bridge lock')
     try:
-        if sys.platform == "win32":
-            import msvcrt
-            while not acquired:
-                try:
+        if getattr(_LOCAL, 'depth', 0):
+            _LOCAL.depth += 1
+            try:
+                yield
+            finally:
+                _LOCAL.depth -= 1
+            return
+        with open(lock_path(), 'a+b') as handle:
+            # msvcrt locks from the current position. Append mode moves to EOF;
+            # always lock AND unlock byte zero, even if a stale file is nonempty.
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b'\0')
+                handle.flush()
+            if sys.platform == 'win32':
+                import msvcrt
+                def acquire():
+                    handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                    acquired = True
-                except OSError:
-                    if time.time() > deadline:
-                        raise TimeoutError("another session is holding the Axure bridge lock")
-                    time.sleep(poll)
-            _DEPTH["n"] = 1
-            try:
-                yield
-            finally:
-                _DEPTH["n"] = 0
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:  # pragma: no cover - Windows is the target platform
-            import fcntl
-            while not acquired:
-                try:
+                def release():
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                def acquire():
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    acquired = True
+                def release():
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            while True:
+                try:
+                    acquire()
+                    break
                 except OSError:
-                    if time.time() > deadline:
-                        raise TimeoutError("another session is holding the Axure bridge lock")
-                    time.sleep(poll)
-            _DEPTH["n"] = 1
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('another session is holding the Axure bridge lock')
+                    time.sleep(min(poll, remaining))
+            _LOCAL.depth = 1
             try:
                 yield
             finally:
-                _DEPTH["n"] = 0
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                _LOCAL.depth = 0
+                release()
     finally:
-        handle.close()
+        _THREAD_LOCK.release()

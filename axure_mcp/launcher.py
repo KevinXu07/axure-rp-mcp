@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+import sys
+import errno
 
 from .client import Bridge, BridgeError, discover, wait_for_bridge
 
@@ -15,7 +17,14 @@ DEFAULT_PORT = 41999
 
 
 def exe_path() -> str:
-    return os.environ.get("AXURE_EXE", DEFAULT_EXE)
+    configured = os.environ.get("AXURE_EXE")
+    if configured:
+        if sys.platform == "darwin" and configured.endswith(".app"):
+            return os.path.join(configured, "Contents", "MacOS", os.path.basename(configured)[:-4])
+        return configured
+    if sys.platform == "darwin":
+        return "/Applications/Axure RP 11.app/Contents/MacOS/Axure RP 11"
+    return DEFAULT_EXE
 
 
 def bridge_path() -> str:
@@ -28,13 +37,26 @@ def bridge_path() -> str:
     configured = os.environ.get("AXURE_BRIDGE_DLL")
     if configured:
         return configured
-    candidates = [path for path in (DEFAULT_BRIDGE, FALLBACK_BRIDGE) if os.path.exists(path)]
+    framework = "net8.0" if sys.platform == "darwin" else "net10.0"
+    build = os.path.join(REPO_ROOT, "bridge", "bin", "Debug", framework, "AxureBridge.dll")
+    # Mac must never select a net10 assembly built for the Windows host.
+    dist = os.path.join(REPO_ROOT, "bridge", "dist", framework, "AxureBridge.dll")
+    paths = (dist, build) if sys.platform == "darwin" else (DEFAULT_BRIDGE, FALLBACK_BRIDGE, dist)
+    candidates = [path for path in paths if os.path.exists(path)]
     if not candidates:
         return DEFAULT_BRIDGE
     return max(candidates, key=os.path.getmtime)
 
 
 def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as exc:
+            return exc.errno == errno.EPERM
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                              capture_output=True, text=True).stdout
@@ -128,16 +150,30 @@ def launch(open_file: str | None = None, port: int | None = None, wait: float = 
             f"bridge assembly not found: {dll} (build bridge/AxureBridge.csproj, or set AXURE_BRIDGE_DLL)")
 
     env = dict(os.environ)
-    env["DOTNET_STARTUP_HOOKS"] = dll
+    env["DOTNET_STARTUP_HOOKS"] = os.pathsep.join(filter(None, (env.get("DOTNET_STARTUP_HOOKS"), dll)))
     env["AXURE_BRIDGE_PORT"] = str(start_port)
 
     subprocess.Popen([exe] + ([open_file] if open_file else []), env=env, close_fds=True)
 
-    deadline = time.time() + wait
-    while time.time() < deadline:
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
         # only the port we asked for (plus the few the bridge would walk to) - not the whole range
         for candidate in range(start_port, start_port + 5):
             if _ping_port(candidate):
                 return wait_for_bridge(candidate, timeout=5)
         time.sleep(0.4)
     return None
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("file", nargs="?", help=".rp file to open when launching Axure")
+    args = parser.parse_args()
+    bridge = launch(open_file=args.file)
+    if bridge is None:
+        raise SystemExit("Axure started but the bridge did not become available")
+    try:
+        print(bridge.ping())
+    finally:
+        bridge.close()
