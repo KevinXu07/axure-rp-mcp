@@ -1,0 +1,43 @@
+# ---- build output ----
+bridge/bin/
+bridge/obj/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# ---- reverse engineering artifacts (Axure's own proprietary code) ----
+decompiled/
+
+# ---- exploration scripts kept for history, not part of the project ----
+tools/scratch/
+
+# ---- runtime / local state ----
+*.log
+axure-bridge.json
+.env
+.venv/
+venv/
+
+# ---- working documents and generated prototypes ----
+# keep the clean template (demos copy from it) and the WeChat showcase
+test/*.rp
+!test/clean.rp
+!test/wechat.rp
+test/*-copy.rp
+analysis/*.png
+!analysis/wechat-home.png
+!analysis/wechat-after-reload.png
+!analysis/demo2-after-reload.png
+
+# ---- editor / OS noise ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+**/bin/
+**/obj/
+analysis/*.txt
+tools/DecryptStrings/
+bridge/dist/
+bridge/.test-instance.pid
