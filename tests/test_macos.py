@@ -48,6 +48,15 @@ class MacTests(unittest.TestCase):
         bridge.docs.return_value=[{'handle':1},{'handle':3}]
         with self.assertRaises(AxureError): _=app.client
 
+    def test_old_handle_rebinds_by_guid_only_within_requested_page(self):
+        bridge=Mock(); app=MacAxure(bridge=bridge)
+        app.objects=lambda package: 100
+        app._collect_handles=lambda objects,deep=False:[20,21]
+        ids={10:'persistent-id',20:'other-id',21:'persistent-id',30:'foreign-id'}
+        bridge.invoke_on.side_effect=lambda handle,method: ids[handle]
+        self.assertEqual(app.resolve_widget(1,handle=10),21)
+        with self.assertRaises(AxureError):app.resolve_widget(1,handle=30)
+
     def test_capabilities_are_a_subset_of_registered_tools(self):
         self.assertEqual(len(SUPPORTED_TOOLS),19)
         self.assertTrue(SUPPORTED_TOOLS <= server.HANDLERS.keys())

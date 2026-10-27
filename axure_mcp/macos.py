@@ -151,6 +151,32 @@ class MacAxure(Axure):
             raise AxureError(f'{kind} does not support text; omit text')
         return super().add_widget(package, kind, name, text, **kwargs)
 
+    def _collect_handles(self, objects, deep=False, depth=0):
+        handles = []
+        for item in self.b.iter(objects, limit=2000) or []:
+            handle = item.get('$h') if isinstance(item, dict) else None
+            if not handle:
+                continue
+            handles.append(handle)
+            # Only groups are supported child containers. Probing arbitrary
+            # table/panel internals is not safe on this version.
+            if deep and depth < 4 and item.get('type') == 'Axure.DocumentModel.Objects.Layer':
+                inner = self.b.get_on(handle, 'DiagramObjects')['$h']
+                handles.extend(self._collect_handles(inner, True, depth + 1))
+        return handles
+
+    def resolve_widget(self, package, name='', handle=None):
+        if handle is None:
+            return super().resolve_widget(package, name, handle)
+        # RefreshOuterObject reconstructs the model. A previously returned
+        # bridge handle still points at its old object; bind by persistent GUID
+        # within the requested page, rather than editing that detached object.
+        ident = self.b.invoke_on(handle, 'wVqm')
+        for live in self._collect_handles(self.objects(package), deep=True):
+            if self.b.invoke_on(live, 'wVqm') == ident:
+                return live
+        raise AxureError('widget handle is not present on the requested Mac page')
+
     def _style_handle(self, widget):
         return self.b.get_on(widget, 'MyStyle')['$h']
 
@@ -188,6 +214,8 @@ class MacAxure(Axure):
         file = self.b.get_on(self.client, 'CurrentFile')['$h']
         self.b.invoke_on(file, 'pIAO', [{'$h': package or self.active_package()}, None])
         self.b.invoke_on(file, 'Save')
+        self.b.invoke_on(self.client, 'RefreshOuterObject')
+        self.b.call('flush_paint')
 
     def open_file(self, path):
         self.b.invoke_on(self.client, 'OpenDocumentInSameAXDocument', [str(path), False])

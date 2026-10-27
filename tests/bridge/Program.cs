@@ -45,9 +45,11 @@ static class Program
         if (!OperatingSystem.IsWindows())
         {
             PaintGuard.Pause(); PaintGuard.Resume();
-            if (PaintGuard.Flush() || Dialogs.Find().Count != 0)
+            if ((!OperatingSystem.IsMacOS() && PaintGuard.Flush()) || Dialogs.Find().Count != 0)
                 throw new Exception("non-Windows guards must be inert");
         }
+        if (!MacPaint.Flush() || FakeView.Invalidations != 3 || FakeWindow.Displays != 1)
+            throw new Exception("Cocoa repaint must invalidate all descendants and display the window");
         Console.WriteLine("PASS: null/value/error completion, queued timeout cancellation, missing dispatcher, platform guards");
     }
 }
@@ -68,6 +70,27 @@ namespace AxureBridge
     public static class Bridge
     {
         public static void Log(string message) { }
-        public static Type ResolveType(string name) => throw new InvalidOperationException(name);
+        public static Type ResolveType(string name) => name == "MCocoa.NSApplication"
+            ? typeof(FakeApplication) : throw new InvalidOperationException(name);
     }
+}
+
+public class FakeApplication
+{
+    public static FakeApplication sharedApplication() => new();
+    public FakeWindow[] windows() => new[] { new FakeWindow() };
+}
+public class FakeWindow
+{
+    public static int Displays;
+    public FakeView contentView() => new(new FakeView(new FakeView()));
+    public void displayIfNeeded() => Displays++;
+}
+public class FakeView
+{
+    public static int Invalidations;
+    readonly FakeView[] children;
+    public FakeView(params FakeView[] children) { this.children = children; }
+    public void setNeedsDisplay(bool value) { if (value) Invalidations++; }
+    public FakeView[] subviews() => children;
 }

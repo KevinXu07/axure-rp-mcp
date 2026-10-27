@@ -76,7 +76,8 @@ Supported creation kinds: button, checkbox, radiobutton, textbox, textarea, drop
 11. The process-wide nesting counter allowed a second thread to enter the bridge critical section. A re-entrant thread lock plus thread-local nesting now encloses the OS file lock. Windows always locks/unlocks byte zero of a nonempty lock file.
 12. Malformed JSON-RPC envelopes could terminate the server. Null arguments, array element type errors, and nonfinite numbers could pass validation. Validation is recursive and request errors leave the server alive. Notifications never receive replies, unsupported batch requests are rejected as invalid requests, and stdio is explicitly UTF-8 even under a legacy Windows code page.
 13. Cocoa document discovery records the active document, and the Mac client is resolved for the current window rather than kept from an earlier window.
-14. Unnamed widgets were inserted but omitted from `get_page`. Page reads now include unnamed widgets so their handles can be used for editing/deletion.
+14. Direct collection mutations persisted but were absent from the live canvas until reload. Saving now reconstructs the editor page after serialization, then invalidates/displays the Cocoa view tree on the UI thread. Previously returned widget handles are rebound by persistent GUID within the requested page, so updates after refresh remain valid and cross-page handles are rejected.
+15. Unnamed widgets were inserted but omitted from `get_page`. Page reads now include unnamed widgets so their handles can be used for editing/deletion.
 
 ## Reproduce the checks
 

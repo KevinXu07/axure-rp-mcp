@@ -81,6 +81,7 @@ internal static class PaintGuard
     /// <summary>Repaint the canvas once, after a batch of edits.</summary>
     public static bool Flush()
     {
+        if (OperatingSystem.IsMacOS()) return UiThread.Run(MacPaint.Flush);
         if (!OperatingSystem.IsWindows()) return false;
         if (!_dirty) return false;
         var hwnd = MainWindow();

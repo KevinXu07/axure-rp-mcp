@@ -76,14 +76,15 @@ def exercise(mcp, path, report):
     mcp.call('axure_rename_page',page_id=doomed['id'],name='MCP renamed temporary')
     mcp.call('axure_move_page',page_id=doomed['id'],index=1)
     mcp.call('axure_delete_page',page_id=doomed['id'])
+    created = {}
     for i, kind in enumerate(sorted(SUPPORTED_WIDGETS)):
         args = dict(kind=kind,name='mcp_'+kind,page_id=pid,
                     x=30+(i%4)*180,y=30+(i//4)*100,width=155,height=55)
         if kind in TEXT_WIDGETS: args['text']='Mac 测试 '+kind
-        mcp.call('axure_add_widget',**args)
-    mcp.call('axure_update_widget',page_id=pid,name='mcp_button',
+        created[kind] = mcp.call('axure_add_widget',**args)['widget']['handle']
+    mcp.call('axure_update_widget',page_id=pid,widget_id=created['button'],
              text='保存并重开后仍然存在 ✓',x=40,y=40,width=210,height=48)
-    mcp.call('axure_style_widget',page_id=pid,name='mcp_button',
+    mcp.call('axure_style_widget',page_id=pid,widget_id=created['button'],
              fill='#123456',text_color='#FFFFFF',border_color='#ABCDEF',
              border_width=2,corner_radius=8,opacity=0.8,font='Arial',font_size=18,
              bold=True,italic=True,underline=True,align='center',valign='middle',
@@ -98,6 +99,11 @@ def exercise(mcp, path, report):
     mcp.call('axure_align',page_id=pid,names=layout,mode='left')
     mcp.call('axure_same_size',page_id=pid,names=layout,mode='both')
     mcp.call('axure_distribute',page_id=pid,names=layout,axis='vertical',gap=18)
+    other = mcp.call('axure_create_page',name='MCP handle isolation')['page']
+    rejected = mcp.call('axure_update_widget',expect_error=True,page_id=other['id'],
+                        widget_id=created['button'],text='must not modify another page')
+    assert 'not present on the requested Mac page' in rejected, rejected
+    mcp.call('axure_delete_page',page_id=other['id'])
     expected_page = mcp.call('axure_get_page',page_id=pid)
     style = mcp.call('axure_get_widget_style',page_id=pid,name='mcp_button')['style']
     mcp.call('axure_page_tree')

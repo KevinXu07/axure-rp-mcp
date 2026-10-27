@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="../../bridge/UiThread.cs" Link="UiThread.cs" />
     <Compile Include="../../bridge/PaintGuard.cs" Link="PaintGuard.cs" />
+    <Compile Include="../../bridge/MacPaint.cs" Link="MacPaint.cs" />
     <Compile Include="../../bridge/Dialogs.cs" Link="Dialogs.cs" />
   </ItemGroup>
 </Project>
