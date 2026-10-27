@@ -66,10 +66,16 @@ def require_document(mcp, path):
 
 
 def exercise(mcp, path, report):
-    if Path(report).exists(): raise RuntimeError('report already exists; choose a new report path')
+    path=Path(path);report=Path(report)
+    if not report.parent.is_dir():
+        raise RuntimeError('report directory does not exist')
+    if report.exists(): raise RuntimeError('report already exists; choose a new report path')
+    copy_path=path.with_name(path.stem+'-saved-copy.rp')
+    if copy_path.exists(): raise RuntimeError(f'copy already exists: {copy_path}')
     status = require_document(mcp,path)
     advertised = mcp.rpc('tools/list',{})['tools']
     assert {t['name'] for t in advertised} == SUPPORTED_TOOLS
+    assert len(advertised) == 35
     page = mcp.call('axure_create_page',name='MCP Mac 验证')['page']
     pid = page['id']
     doomed = mcp.call('axure_create_page',name='MCP temporary')['page']
@@ -124,8 +130,6 @@ def exercise(mcp, path, report):
     after=mcp.call('axure_get_page',page_id=pid)
     assert stable(after)==stable(expected_page)
     mcp.call('axure_save')
-    copy_path=Path(path).with_name(Path(path).stem+'-saved-copy.rp')
-    if copy_path.exists(): raise RuntimeError(f'copy already exists: {copy_path}')
     mcp.call('axure_save_as',path=str(copy_path))
     assert copy_path.read_bytes()==Path(path).read_bytes()
     # Reopen the exact same document using the MCP tool, and verify fresh handles.
@@ -134,9 +138,11 @@ def exercise(mcp, path, report):
     assert stable(mcp.call('axure_get_page',page_id=pid))==stable(expected_page)
     data={'file':str(path),'runtime':status['runtime'],'page_id':pid,
           'widgets':stable(expected_page),'style':style,'unsupported':unsupported,
+          'advertised_tools':len(advertised),
           'calls':mcp.calls,'copy':str(copy_path),'original_pid':status['runtime']['pid']}
     Path(report).write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(json.dumps({'phase':'exercise','tools':len(set(c['name'] for c in mcp.calls if not c['isError'])),
+    print(json.dumps({'phase':'exercise','advertised_tools':len(advertised),
+                      'exercised_tools':len(set(c['name'] for c in mcp.calls if not c['isError'])),
                       'widgets':len(data['widgets']),'unsupported_gated':len(unsupported),'report':str(report)},ensure_ascii=False))
 
 
@@ -170,9 +176,13 @@ def main():
     mcp=MCP()
     try:
         if args.exercise:
-            if not args.exercise.is_absolute() or not args.report: parser.error('absolute --exercise and --report required')
+            if (not args.exercise.is_absolute() or not args.report
+                    or not args.report.is_absolute()):
+                parser.error('absolute --exercise and --report required')
             exercise(mcp,args.exercise,args.report)
-        else: verify(mcp,args.verify)
+        else:
+            if not args.verify.is_absolute(): parser.error('absolute --verify required')
+            verify(mcp,args.verify)
     finally: mcp.close()
 
 

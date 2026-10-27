@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 
 namespace AxureBridge;
@@ -666,29 +667,139 @@ public static class Bridge
         const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         var controller = ResolveType("MCocoa.NSDocumentController")
             .GetMethod("sharedDocumentController", Type.EmptyTypes).Invoke(null, null);
-        var current = controller.GetType().GetMethod("currentDocument", flags)?.Invoke(controller, null);
-        var activeClient = current?.GetType().GetProperty("Client", flags)?.GetValue(current);
-        var documents = controller.GetType().GetMethod("documents", flags).Invoke(controller, null);
-        var count = Convert.ToUInt64(documents.GetType().GetMethod("count").Invoke(documents, null));
+        var activeDocument = FindActiveMacDocument(controller);
+        var documents = CallNoArgs(controller, "documents");
         var arr = new JsonArray();
-        for (ulong i = 0; i < count; i++)
+        if (documents is not System.Collections.IEnumerable sequence) return arr;
+
+        foreach (var nativeDoc in sequence)
         {
-            var nativeDoc = documents.GetType().GetMethod("objectAtIndex").Invoke(documents, new object[] { i });
-            var client = nativeDoc.GetType().GetProperty("Client", flags)?.GetValue(nativeDoc);
-            if (client == null) continue;
-            var doc = client.GetType().GetProperty("Document", flags)?.GetValue(client);
-            var file = client.GetType().GetProperty("CurrentFile", flags)?.GetValue(client);
+            var client = GetHierarchyPropertyValue(nativeDoc, "Client");
+            if (IsCocoaNil(client)) continue;
+            var doc = GetHierarchyPropertyValue(client, "Document");
+            var file = GetHierarchyPropertyValue(client, "CurrentFile");
+            var window = GetHierarchyPropertyValue(nativeDoc, "WorkspaceWindow");
+            var isKey = CallNoArgsOrNull(window, "isKeyWindow") is bool key && key;
+            var isMain = CallNoArgsOrNull(window, "isMainWindow") is bool main && main;
+            var isVisible = CallNoArgsOrNull(window, "isVisible") is bool visible && visible;
             arr.Add(new JsonObject
             {
+                ["id"] = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(client),
                 ["clientType"] = client.GetType().FullName,
-                ["isActive"] = ReferenceEquals(client, activeClient),
+                ["isActive"] = ReferenceEquals(nativeDoc, activeDocument),
+                ["isKeyWindow"] = isKey,
+                ["isMainWindow"] = isMain,
+                ["isVisible"] = isVisible,
                 ["handle"] = HandleTable.Add(client),
                 ["docHandle"] = doc == null ? null : HandleTable.Add(doc),
+                ["nativeHandle"] = HandleTable.Add(nativeDoc),
                 ["fileName"] = file?.GetType().GetMethod("fIed", flags)?.Invoke(file, null)?.ToString(),
                 ["displayName"] = nativeDoc.GetType().GetMethod("displayName", flags)?.Invoke(nativeDoc, null)?.ToString()
             });
         }
         return arr;
+    }
+
+    private static object FindActiveMacDocument(object controller)
+    {
+        var app = ResolveType("MCocoa.NSApplication")
+            .GetMethod("sharedApplication", Type.EmptyTypes).Invoke(null, null);
+
+        // The key window is the user's current context. currentDocument can
+        // remain stale while another document window is active, so consult the
+        // key window first. When the app is inactive keyWindow is nil and the
+        // controller's current document remains a useful fallback.
+        var keyWindow = CallNoArgsOrNull(app, "keyWindow");
+        if (!IsCocoaNil(keyWindow))
+        {
+            var doc = InvokeMethodOrNull(controller, "documentForWindow", keyWindow);
+            if (!IsCocoaNil(doc)) return doc;
+        }
+
+        var current = CallNoArgsOrNull(controller, "currentDocument");
+        if (!IsCocoaNil(current)) return current;
+
+        var mainWindow = CallNoArgsOrNull(app, "mainWindow");
+        if (!IsCocoaNil(mainWindow))
+        {
+            var doc = InvokeMethodOrNull(controller, "documentForWindow", mainWindow);
+            if (!IsCocoaNil(doc)) return doc;
+        }
+
+        // Window order still follows normal Cocoa activation rules. It is the
+        // final fallback while the app is inactive or macOS is locked.
+        if (CallNoArgsOrNull(app, "orderedWindows") is not System.Collections.IEnumerable windows) return null;
+        foreach (var window in windows)
+        {
+            if (IsCocoaNil(window)) continue;
+            var doc = InvokeMethodOrNull(controller, "documentForWindow", window);
+            if (!IsCocoaNil(doc)) return doc;
+        }
+        return null;
+    }
+
+    private static PropertyInfo GetHierarchyProperty(object target, string name)
+    {
+        if (IsCocoaNil(target)) return null;
+        const BindingFlags flags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        for (var type = target.GetType(); type != null; type = type.BaseType)
+        {
+            var property = type.GetProperty(name, flags);
+            if (property != null) return property;
+        }
+        return null;
+    }
+
+    private static object GetHierarchyPropertyValue(object target, string name) =>
+        GetHierarchyProperty(target, name)?.GetValue(target);
+
+    private static object CallNoArgs(object target, string name)
+    {
+        const BindingFlags flags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+        var method = target.GetType().GetMethod(name, flags, null, Type.EmptyTypes, null)
+            ?? throw new InvalidOperationException($"method {target.GetType().FullName}.{name} not found");
+        return method.Invoke(target, null);
+    }
+
+    private static object CallNoArgsOrNull(object target, string name)
+    {
+        if (IsCocoaNil(target)) return null;
+        try { return CallNoArgs(target, name); }
+        catch { return null; }
+    }
+
+    private static object InvokeMethodOrNull(object target, string name, object argument)
+    {
+        if (IsCocoaNil(target)) return null;
+        const BindingFlags flags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+        try
+        {
+            foreach (var method in target.GetType().GetMethods(flags)
+                         .Where(m => m.Name == name && m.GetParameters().Length == 1))
+            {
+                var parameter = method.GetParameters()[0].ParameterType;
+                if (parameter.IsInstanceOfType(argument))
+                    return method.Invoke(target, new[] { argument });
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static bool IsCocoaNil(object value)
+    {
+        if (value == null) return true;
+        var method = value.GetType().GetMethod(
+            "IsNil",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+            null,
+            Type.EmptyTypes,
+            null);
+        try { return method?.Invoke(value, null) is bool result && result; }
+        catch { return false; }
     }
 
     /// <summary>Stable per-object identity so callers can tell "same live object" from "fresh copy".</summary>
@@ -838,9 +949,9 @@ public static class Bridge
     // ---------- value encoding ----------
     public static JsonNode Encode(object value)
     {
+        if (IsCocoaNil(value)) return null;
         switch (value)
         {
-            case null: return null;
             case bool b: return JsonValue.Create(b);
             case string s: return JsonValue.Create(s);
             case byte[] bytes: return JsonValue.Create(Convert.ToBase64String(bytes));
@@ -953,6 +1064,13 @@ internal static class HandleTable
     public static int Add(object o)
     {
         if (o == null) return 0;
+        var nilMethod = o.GetType().GetMethod(
+            "IsNil",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+            null,
+            Type.EmptyTypes,
+            null);
+        if (nilMethod?.Invoke(o, null) is true) return 0;
         var id = Interlocked.Increment(ref _next);
         Table[id] = o;
         return id;

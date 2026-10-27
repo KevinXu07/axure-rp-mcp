@@ -13,6 +13,7 @@ Register with an MCP client (Claude Desktop / Claude Code / Cursor / ...):
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import sys
@@ -49,6 +50,7 @@ TOOLS = [
             "properties": {
                 "page_id": {"type": "string", "description": "Page id from axure_list_pages; defaults to the open page."},
                 "page_name": {"type": "string", "description": "Page name, used when page_id is omitted."},
+                "deep": {"type": "boolean", "description": "Include widgets inside groups; default false."},
             },
             "additionalProperties": False,
         },
@@ -691,9 +693,77 @@ def _hint(message: str) -> str:
     return ""
 
 
+def _adapt_tool_for_mac(tool: dict) -> dict:
+    """Return the Mac-specific public contract for one registered tool."""
+    adapted = copy.deepcopy(tool)
+    name = adapted["name"]
+    if name == "axure_z_order":
+        adapted["description"] = "Change top-level stacking order on Mac: front or back."
+        adapted["inputSchema"]["properties"]["action"]["enum"] = ["front", "back"]
+    elif name == "axure_add_interaction":
+        adapted["description"] = (
+            "Attach one case of up to 100 actions on Mac. Supported actions: navigate, close, "
+            "wait, set_opacity, move, rotate and resize. Use the batch form to keep one event "
+            "and one case; move/rotate mode accepts Location/Delta or To/By. "
+            "Move sets both X and Y; resize value is a scale factor."
+        )
+        properties = adapted["inputSchema"]["properties"]
+        properties["mode"] = {
+            "type": "string",
+            "enum": ["Location", "Delta", "To", "By"],
+            "description": "Mac move/rotate: absolute Location/To or relative Delta/By.",
+        }
+        properties.pop("fade", None)
+        properties["actions"]["maxItems"] = 100
+        properties["actions"]["items"] = {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["navigate", "close", "wait", "set_opacity",
+                             "move", "rotate", "resize"],
+                },
+                "target_page_id": {"type": "string"},
+                "link_type": {"type": "string", "enum": ["Current", "New", "Popup", "Parent"]},
+                "wait_ms": {"type": "integer", "minimum": 0},
+                "target_widget": {"type": "string"},
+                "value": {"type": "number"},
+                "mode": {"type": "string", "enum": ["Location", "Delta", "To", "By"]},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        }
+    elif name == "axure_set_image":
+        adapted["description"] = (
+            "Embed or replace a PNG/JPEG in an ImageBox. Mac verifies the stored bytes and "
+            "returns their SHA-256."
+        )
+    elif name == "axure_set_list_items":
+        adapted["description"] = (
+            "Replace a droplist/listbox option list and selection. Empty lists are supported."
+        )
+    elif name == "axure_set_widget_note":
+        adapted["description"] = (
+            "Write an independent widget note. Mac page notes and widget notes coexist."
+        )
+    elif name == "axure_group":
+        adapted["description"] = (
+            "Group top-level widgets into a Layer. Use axure_ungroup to dissolve it."
+        )
+    elif name == "axure_add_widget":
+        from .macos import SUPPORTED_WIDGETS
+        adapted["inputSchema"]["properties"]["kind"]["enum"] = sorted(SUPPORTED_WIDGETS)
+        adapted["description"] += (
+            " Mac: direct model insertion does not create an undo entry; work on a disposable copy."
+        )
+    return adapted
+
+
 def _validate_args(name: str, args: dict) -> None:
     """Reject bad arguments with a readable message instead of a Python TypeError."""
     schema = (_SCHEMAS.get(name) or {}).get("inputSchema") or {}
+    if sys.platform == "darwin" and name in _SCHEMAS:
+        schema = _adapt_tool_for_mac(_SCHEMAS[name])["inputSchema"]
     _validate_value(args, schema, "arguments")
 
 
@@ -798,13 +868,25 @@ def tool_axure_list_pages(_args: dict) -> dict:
 def tool_axure_get_page(args: dict) -> dict:
     app = _app()
     package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
-    widgets = app.widgets(package)
+    widgets = app.widgets(package, deep=args.get("deep", False))
+    records = [{k: w.get(k) for k in
+                ("handle", "Name", "FriendlyTypeName", "Text", "X", "Y", "Width", "Height", "Visible")}
+               for w in widgets]
+    if hasattr(app, "widget_content"):
+        for record in records:
+            try:
+                content = app.widget_content(record["handle"])
+            except (BridgeError, AxureError) as exc:
+                # Content readback is additive. Keep geometry/name available
+                # when one version-specific container cannot expose its child data.
+                record["content_error"] = str(exc)
+            else:
+                if content is not None:
+                    record["content"] = content
     return _json({
         "page": {"id": page_id, "name": page_name},
         "widget_count": len(widgets),
-        "widgets": [{k: w.get(k) for k in
-                     ("handle", "Name", "FriendlyTypeName", "Text", "X", "Y", "Width", "Height", "Visible")}
-                    for w in widgets],
+        "widgets": records,
     })
 
 
@@ -1045,9 +1127,14 @@ def tool_axure_get_widget_notes(args: dict) -> dict:
 
 
 def tool_axure_set_image(args: dict) -> dict:
+    try:
+        data = base64.b64decode(args["image_base64"], validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AxureError("image_base64 is not valid base64") from exc
+    if not data:
+        raise AxureError("image_base64 decoded to zero bytes")
     app = _app()
     package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
-    data = base64.b64decode(args["image_base64"])
     result = app.set_image(package, args.get("name") or "", args.get("widget_id"),
                            data, args.get("filename") or "image.png")
     app.save(package)
@@ -1164,10 +1251,14 @@ for _tool in TOOLS:
     for _key, _spec in _tool["inputSchema"].get("properties", {}).items():
         if _key in {"width", "height", "border_width", "corner_radius", "font_size", "wait_ms", "index"}:
             _spec["minimum"] = 0
+        if _key == "count":
+            _spec.update(minimum=1, maximum=100)
         if _key == "max_dimension":
             _spec.update(minimum=1, maximum=16384)
         if _key == "names":
             _spec["minItems"] = 1
+        if _key == "actions":
+            _spec["maxItems"] = 100
 
 
 _SCHEMAS: dict = {tool["name"]: tool for tool in TOOLS}
@@ -1229,12 +1320,8 @@ def handle_request(request: dict) -> None:
     if method == "tools/list":
         tools = TOOLS
         if sys.platform == "darwin":
-            from .macos import SUPPORTED_TOOLS, SUPPORTED_WIDGETS
-            tools = copy.deepcopy([t for t in TOOLS if t["name"] in SUPPORTED_TOOLS])
-            for tool in tools:
-                if tool["name"] == "axure_add_widget":
-                    tool["inputSchema"]["properties"]["kind"]["enum"] = sorted(SUPPORTED_WIDGETS)
-                    tool["description"] += " Mac: direct model insertion does not create an undo entry."
+            from .macos import SUPPORTED_TOOLS
+            tools = [_adapt_tool_for_mac(t) for t in TOOLS if t["name"] in SUPPORTED_TOOLS]
         _result(msg_id, {"tools": tools})
         return
 
