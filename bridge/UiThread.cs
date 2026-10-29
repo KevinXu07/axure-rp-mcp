@@ -8,12 +8,13 @@ namespace AxureBridge;
 /// </summary>
 internal static class UiThread
 {
-    private static bool _resolved;
+    private static volatile bool _resolved;
     private static object _dispatcher;
     private static MethodInfo _dispatcherInvoke;
     private static MethodInfo _dispatcherCheckAccess;
     private static object _appMarshaller;
     private static MethodInfo _appMarshal;
+    private static PropertyInfo _invokeRequired;
     private static readonly object Gate = new();
 
     public static T Run<T>(Func<T> func)
@@ -26,10 +27,17 @@ internal static class UiThread
         {
             // hold off painting while the document is being mutated: Axure's OnPaint enumerates the
             // object list we are changing, which throws "Collection was modified" -> Report Error
-            PaintGuard.Pause();
-            try { result = func(); }
+            try
+            {
+                PaintGuard.Pause();
+                result = func();
+            }
             catch (Exception ex) { error = ex; }
-            finally { PaintGuard.Resume(); }
+            finally
+            {
+                try { PaintGuard.Resume(); }
+                catch (Exception ex) { error ??= ex; }
+            }
         }
 
         if (_dispatcher != null && _dispatcherInvoke != null)
@@ -44,19 +52,30 @@ internal static class UiThread
         }
         else if (_appMarshaller != null && _appMarshal != null)
         {
-            Action action = Body;
-            _appMarshal.Invoke(_appMarshaller, new object[] { action });
-            // if the marshaller is asynchronous we may still be racing; give it a moment
-            if (result == null && error == null)
+            if (_invokeRequired != null && !(bool)_invokeRequired.GetValue(_appMarshaller)) Body();
+            else
             {
-                var deadline = Environment.TickCount64 + 15000;
-                while (result == null && error == null && Environment.TickCount64 < deadline)
-                    Thread.Sleep(10);
+                var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                int state = 0; // queued=0, running=1, cancelled=2
+                Action action = () =>
+                {
+                    if (Interlocked.CompareExchange(ref state, 1, 0) != 0) return;
+                    try { Body(); } finally { done.TrySetResult(true); }
+                };
+                _appMarshal.Invoke(_appMarshaller, new object[] { action });
+                // Completion is independent of the result: void/null is a successful call too.
+                if (!done.Task.Wait(TimeSpan.FromSeconds(15)))
+                {
+                    var previous = Interlocked.CompareExchange(ref state, 2, 0);
+                    throw new TimeoutException(previous == 0
+                        ? "Axure UI operation cancelled before it started"
+                        : "Axure UI operation is still running; inspect the document before retrying");
+                }
             }
         }
         else
         {
-            Body();
+            throw new InvalidOperationException("Axure UI dispatcher unavailable; refusing to access the document on a worker thread");
         }
 
         if (error != null) throw error;
@@ -69,11 +88,27 @@ internal static class UiThread
         lock (Gate)
         {
             if (_resolved) return;
-            _resolved = true;
             ResolveWpf();
-            if (_dispatcher == null) ResolveAppMarshaller();
+            if (_dispatcherInvoke == null)
+            {
+                if (OperatingSystem.IsMacOS()) ResolveCocoa();
+                else ResolveAppMarshaller();
+            }
+            _resolved = _dispatcherInvoke != null || _appMarshal != null;
             Bridge.Log($"uithread: dispatcher={( _dispatcher != null)} appMarshaller={(_appMarshaller != null)}");
         }
+    }
+
+    private static void ResolveCocoa()
+    {
+        try
+        {
+            var t = Bridge.ResolveType("MCocoa.NSApplication");
+            _appMarshaller = t.GetMethod("sharedApplication", Type.EmptyTypes)?.Invoke(null, null);
+            _appMarshal = t.GetMethod("BeginInvoke", new[] { typeof(Action) });
+            _invokeRequired = t.GetProperty("InvokeRequired");
+        }
+        catch (Exception ex) { Bridge.Log("Cocoa dispatcher probe: " + ex.Message); }
     }
 
     private static void ResolveWpf()

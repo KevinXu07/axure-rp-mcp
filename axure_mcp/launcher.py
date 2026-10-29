@@ -2,20 +2,32 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import subprocess
 import time
+import sys
+import errno
 
-from .client import Bridge, BridgeError, discover, wait_for_bridge
+from .client import DEFAULT_PORT, Bridge, BridgeError, discover, wait_for_bridge
 
 DEFAULT_EXE = r"D:\Program Files (x86)\Axure\Axure RP 11\AxureRP11.exe"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BRIDGE = os.path.join(REPO_ROOT, "bridge", "dist", "AxureBridge.dll")
 FALLBACK_BRIDGE = os.path.join(REPO_ROOT, "bridge", "bin", "Debug", "net10.0", "AxureBridge.dll")
-DEFAULT_PORT = 41999
+MAC_LAUNCH_STABILITY_SECONDS = 1.25
+MAC_LAUNCH_RETRY_DELAY_SECONDS = 1.5
 
 
 def exe_path() -> str:
-    return os.environ.get("AXURE_EXE", DEFAULT_EXE)
+    configured = os.environ.get("AXURE_EXE")
+    if configured:
+        configured = os.path.normpath(configured)
+        if sys.platform == "darwin" and configured.lower().endswith(".app"):
+            return os.path.join(configured, "Contents", "MacOS", os.path.basename(configured)[:-4])
+        return configured
+    if sys.platform == "darwin":
+        return "/Applications/Axure RP 11.app/Contents/MacOS/Axure RP 11"
+    return DEFAULT_EXE
 
 
 def bridge_path() -> str:
@@ -28,13 +40,26 @@ def bridge_path() -> str:
     configured = os.environ.get("AXURE_BRIDGE_DLL")
     if configured:
         return configured
-    candidates = [path for path in (DEFAULT_BRIDGE, FALLBACK_BRIDGE) if os.path.exists(path)]
+    framework = "net8.0" if sys.platform == "darwin" else "net10.0"
+    build = os.path.join(REPO_ROOT, "bridge", "bin", "Debug", framework, "AxureBridge.dll")
+    # Mac must never select a net10 assembly built for the Windows host.
+    dist = os.path.join(REPO_ROOT, "bridge", "dist", framework, "AxureBridge.dll")
+    paths = (dist, build) if sys.platform == "darwin" else (DEFAULT_BRIDGE, FALLBACK_BRIDGE, dist)
+    candidates = [path for path in paths if os.path.exists(path)]
     if not candidates:
         return DEFAULT_BRIDGE
     return max(candidates, key=os.path.getmtime)
 
 
 def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as exc:
+            return exc.errno == errno.EPERM
     try:
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                              capture_output=True, text=True).stdout
@@ -113,11 +138,55 @@ def bridge_alive(port: int | None = None, quick: bool = True) -> int | None:
     return None
 
 
+def _wait_for_launched_bridge(process: subprocess.Popen, start_port: int, wait: float) -> Bridge | None:
+    """Wait until the child process and its bridge are both stable.
+
+    The startup hook can expose the bridge while Client.Mac is still creating
+    NSApplication. A TCP ping at that point is not enough: macOS can
+    exit shortly afterwards if Axure is relaunched before Cocoa has fully
+    released the prior application instance.
+    """
+    deadline = time.monotonic() + wait
+    stable_port = None
+    stable_since = None
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return None
+        found = next((candidate for candidate in range(start_port, start_port + 5)
+                      if _ping_port(candidate)), None)
+        now = time.monotonic()
+        if found is None:
+            stable_port = stable_since = None
+        elif found != stable_port:
+            stable_port, stable_since = found, now
+        elif now - stable_since >= MAC_LAUNCH_STABILITY_SECONDS:
+            if process.poll() is not None:
+                return None
+            try:
+                bridge = wait_for_bridge(found, timeout=5)
+            except BridgeError:
+                return None
+            if process.poll() is None:
+                return bridge
+            bridge.close()
+            return None
+        time.sleep(0.2)
+    return None
+
+
 def launch(open_file: str | None = None, port: int | None = None, wait: float = 90.0) -> Bridge | None:
     """Start Axure with the bridge injected (or reuse a running bridge)."""
     alive = bridge_alive(port)
     if alive is not None:
         return wait_for_bridge(alive, timeout=5)
+
+    open_path = None
+    if open_file:
+        open_path = os.path.realpath(os.path.expanduser(str(open_file)))
+        if not os.path.isfile(open_path):
+            raise FileNotFoundError(f"Axure file not found: {open_path}")
+        if Path(open_path).suffix.lower() != ".rp":
+            raise ValueError(f"Axure file must end in .rp: {open_path}")
 
     start_port = port or DEFAULT_PORT
     exe, dll = exe_path(), bridge_path()
@@ -128,16 +197,44 @@ def launch(open_file: str | None = None, port: int | None = None, wait: float = 
             f"bridge assembly not found: {dll} (build bridge/AxureBridge.csproj, or set AXURE_BRIDGE_DLL)")
 
     env = dict(os.environ)
-    env["DOTNET_STARTUP_HOOKS"] = dll
+    env["DOTNET_STARTUP_HOOKS"] = os.pathsep.join(filter(None, (env.get("DOTNET_STARTUP_HOOKS"), dll)))
     env["AXURE_BRIDGE_PORT"] = str(start_port)
 
-    subprocess.Popen([exe] + ([open_file] if open_file else []), env=env, close_fds=True)
-
-    deadline = time.time() + wait
-    while time.time() < deadline:
-        # only the port we asked for (plus the few the bridge would walk to) - not the whole range
-        for candidate in range(start_port, start_port + 5):
-            if _ping_port(candidate):
-                return wait_for_bridge(candidate, timeout=5)
-        time.sleep(0.4)
+    # A direct Popen child stays in the caller's terminal session. If the
+    # launching shell/agent closes first, macOS can deliver SIGHUP to Axure and
+    # make a successful bridge look like a crash. Start a new POSIX session so
+    # the GUI survives its launcher and can be reused by later MCP sessions.
+    attempts = 2 if sys.platform == "darwin" else 1
+    for attempt in range(attempts):
+        process = subprocess.Popen(
+            [exe] + ([open_path] if open_path else []),
+            env=env,
+            close_fds=True,
+            start_new_session=sys.platform != "win32",
+        )
+        bridge = _wait_for_launched_bridge(process, start_port, wait)
+        if bridge is not None:
+            return bridge
+        if attempt + 1 < attempts and process.poll() is not None:
+            print(
+                "[axure-mcp] Axure exited during Cocoa startup; retrying once",
+                file=sys.stderr,
+            )
+            time.sleep(MAC_LAUNCH_RETRY_DELAY_SECONDS)
+            continue
+        break
     return None
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("file", nargs="?", help=".rp file to open when launching Axure")
+    args = parser.parse_args()
+    bridge = launch(open_file=args.file)
+    if bridge is None:
+        raise SystemExit("Axure started but the bridge did not become available")
+    try:
+        print(bridge.ping())
+    finally:
+        bridge.close()

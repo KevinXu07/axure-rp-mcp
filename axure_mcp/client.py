@@ -7,6 +7,8 @@ import socket
 import time
 from typing import Any
 
+from .paths import data_dir
+
 DEFAULT_PORT = 41999
 
 
@@ -15,8 +17,7 @@ class BridgeError(RuntimeError):
 
 
 def discovery_path() -> str:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "Axure", "axure-bridge.json")
+    return os.path.join(data_dir(), "axure-bridge.json")
 
 
 def discover() -> dict | None:
@@ -26,7 +27,8 @@ def discover() -> dict | None:
             info = json.load(fh)
     except (OSError, ValueError):
         return None
-    if not isinstance(info, dict) or "port" not in info:
+    if (not isinstance(info, dict) or type(info.get("port")) is not int
+            or not 1 <= info["port"] <= 65535):
         return None
     return info
 
@@ -46,11 +48,13 @@ class Bridge:
     # ---------- plumbing ----------
 
     def connect(self) -> "Bridge":
+        self.close()
         self._sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         return self
 
     def close(self) -> None:
+        self._buf = b""
         if self._sock:
             try:
                 self._sock.close()
@@ -79,16 +83,23 @@ class Bridge:
         self._id += 1
         assert self._sock is not None
         self._sock.sendall((json.dumps({"id": self._id, **request}) + "\n").encode("utf-8"))
-        return json.loads(self._readline())
+        response = json.loads(self._readline())
+        if not isinstance(response, dict):
+            raise BridgeError("invalid bridge response: expected an object")
+        # Older bridges omit id on errors; successful responses must match.
+        if response.get("ok") and response.get("id") != self._id:
+            raise BridgeError("bridge response id does not match request")
+        return response
 
     def call(self, op: str, **kwargs: Any) -> Any:
         try:
             resp = self.raw({"op": op, **kwargs})
-        except (socket.timeout, TimeoutError, OSError) as exc:
+        except (OSError, ValueError, BridgeError) as exc:
             # A modal dialog (Axure wraps escaped UI exceptions as iI3A.TI3Q) blocks the UI thread, so
             # the call never returns. Read whatever the dialog says, close it, and report that instead
             # of a bare timeout.
-            dialogs = self.dismiss_dialogs()
+            self.close()  # a late reply must never be consumed by the next request
+            dialogs = self.dismiss_dialogs() if op not in {"dismiss", "dialogs", "ping"} else []
             detail = "; ".join(f"{d.get('title','')} :: {d.get('text','')}".strip(" :")
                                for d in dialogs) if dialogs else ""
             if detail:

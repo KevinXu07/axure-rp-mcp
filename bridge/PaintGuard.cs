@@ -51,6 +51,7 @@ internal static class PaintGuard
 
     public static void Pause()
     {
+        if (!OperatingSystem.IsWindows()) return;
         lock (Gate)
         {
             if (_depth++ > 0) return;
@@ -62,6 +63,7 @@ internal static class PaintGuard
 
     public static void Resume()
     {
+        if (!OperatingSystem.IsWindows()) return;
         lock (Gate)
         {
             if (_depth == 0) return;
@@ -79,6 +81,8 @@ internal static class PaintGuard
     /// <summary>Repaint the canvas once, after a batch of edits.</summary>
     public static bool Flush()
     {
+        if (OperatingSystem.IsMacOS()) return UiThread.Run(MacPaint.Flush);
+        if (!OperatingSystem.IsWindows()) return false;
         if (!_dirty) return false;
         var hwnd = MainWindow();
         if (hwnd == IntPtr.Zero) return false;

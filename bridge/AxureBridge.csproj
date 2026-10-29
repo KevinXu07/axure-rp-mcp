@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <AssemblyName>AxureBridge</AssemblyName>
     <RootNamespace>AxureBridge</RootNamespace>
     <Nullable>disable</Nullable>

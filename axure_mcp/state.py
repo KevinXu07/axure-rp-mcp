@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import os
 
-STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Axure")
+from .paths import data_dir
+
+STATE_DIR = data_dir()
 STATE_PATH = os.path.join(STATE_DIR, "axure-mcp-state.json")
 
 

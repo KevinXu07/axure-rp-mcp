@@ -6,7 +6,8 @@ get_diagram / get_interactions / get_annotations / get_widget_image / get_screen
 
 这个项目补上了写能力：**在 Axure 进程内注入一个反射桥**，直接操作它自己的文档模型——
 建控件、改文字、挪位置、删控件、渲染预览、写回 `.rp` 文件，全部走 Axure 原生的数据结构，
-所以画布会立刻变、撤销能撤销、存档能存档。
+所以画布会立刻变、存档能存档。Windows 的工具插入链路可撤销；Mac 当前支持内容编辑与原生
+Preview，但直接模型插入不会产生 Axure 的原生撤销记录。
 
 ```
 你: 在 Page 1 上做一个登录页：标题、邮箱、密码、记住我、登录按钮
@@ -28,34 +29,47 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 （上图是 Axure 自己的渲染器输出的，见 `analysis/final-render.png`）
 
+## 平台支持
+
+Windows 注册 37 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
+.NET 8.0.11** 上通过真实 stdio MCP 调用、原生画布与 Preview、保存后退出并用新 PID 重启读回验证：
+支持 **35 个工具、16 类控件创建**。页面/文件夹、列表、图片替换、表格、富文本、动态面板状态、
+页面与控件备注、分组、层级、7 类交互动作均可持久化。
+
+Mac 暂不宣称 `axure_render_page` 与 `axure_undo`；`connector`、`textlink` 创建会被拒绝。
+其他 Mac 版本会在访问文档模型前明确报版本不支持，Intel Mac 尚未实测。
+
+安装、验证脚本、逐项限制和修复记录见 **[docs/MACOS.md](docs/MACOS.md)**。下方完整能力矩阵是上游 Windows 的验证结果，不代表 Mac 的全部能力。
+
 ## 工具
 
 | 工具 | 作用 |
 | --- | --- |
-| `axure_status` | 桥是否在线、当前打开的文档 || `axure_list_pages` / `axure_page_tree` | 页面列表 / 完整站点树（含文件夹） |
+| `axure_status` | 桥是否在线、当前打开的文档 |
+| `axure_list_pages` / `axure_page_tree` | 页面列表 / 完整站点树（含文件夹） |
 | `axure_create_page` / `axure_create_folder` | 新建页面 / 文件夹（可嵌套） |
 | `axure_rename_page` / `axure_delete_page` / `axure_move_page` | 改名 / 删除 / 移动（重排顺序） |
-| `axure_get_page` | 页面上所有控件的几何、文字、可见性 |
-| `axure_add_widget` | 新建控件（button / textbox / textarea / checkbox / radiobutton / droplist / listbox / dynamicpanel / image / inlineframe / table / repeater / connector / group / hotspot / snapshot / textlink / shape） |
+| `axure_get_page` | 页面上控件的几何、文字、可见性；Mac 可用 `deep=true` 读取分组成员及列表/图片/表格/面板内容 |
+| `axure_add_widget` | 新建控件（button / textbox / textarea / checkbox / radiobutton / droplist / listbox / dynamicpanel / image / inlineframe / table / repeater / connector / group / hotspot / snapshot / textlink / shape）；Mac 不支持 connector / textlink |
 | `axure_update_widget` | 改文字 / 位置 / 尺寸 / 可见性 / 改名 |
 | `axure_delete_widget` | 删除控件 |
 | `axure_style_widget` / `axure_get_widget_style` | **样式**：填充色、边框色/宽度、圆角、透明度、字体/字号/加粗/斜体/下划线、水平与垂直对齐、行距、字距、内边距、旋转 |
-| `axure_add_interaction` / `axure_get_interactions` | **交互**：事件 → 用例 → 动作。经「存盘重载」审计，只开放 **7 个动作**：navigate / close / wait / set_opacity / move / rotate / resize（其余 10 个会被 Axure 静默丢弃或毁文件，已在代码里禁用） |
+| `axure_add_interaction` / `axure_get_interactions` | **交互**：事件 → 用例 → 动作。只开放 **7 个动作**：navigate / close / wait / set_opacity / move / rotate / resize；Mac 每批最多 100 个动作并支持多 case |
 | `axure_align` / `axure_distribute` | **对齐与分布**：左/水平居中/右/上/垂直居中/下，沿水平或垂直等距铺开（可指定间距） |
 | `axure_same_size` | **等宽等高**：以第一个控件为基准统一宽/高/两者 |
-| `axure_group` / `axure_ungroup` | **分组/解散**：多个控件合成 Group；解散后成员回到原位置 |
-| `axure_undo` | 撤销（等价 Ctrl+Z；本服务器创建的控件都走 Axure 自己的插入管线，可撤销） |
-| `axure_z_order` | 层级（front / back，单控件可靠） |
-| `axure_set_list_items` | 下拉/列表框选项（实验性，见限制） |
-| `axure_open_file` | 在运行中的 Axure 里打开 `.rp`（`HNR1.LNRH.Load`） |
-| `axure_render_page` | 用 Axure 自己的渲染管线出 PNG |
+| `axure_group` / `axure_ungroup` | **分组/解散**：多个控件合成 Group；Mac 保持成员全局对象身份，嵌套成员仍可按持久 GUID 编辑 |
+| `axure_undo` | Windows 撤销；Mac 不提供，直接模型插入不会生成原生撤销项 |
+| `axure_z_order` | 层级；Mac 对顶层控件支持 front / back |
+| `axure_set_list_items` | 下拉/列表框选项；Mac 支持整表替换和空列表 |
+| `axure_open_file` | 打开 `.rp`；Mac 使用独立文档窗口并跟随当前窗口，Windows 在现有窗口加载 |
+| `axure_render_page` | Windows 用 Axure 渲染管线出 PNG；Mac 可用原生 Publish > Preview，但不提供此工具内的 PNG |
 | `axure_save` | 把改动写进 `.rp` |
 | `axure_set_rich_text` | **富文本/多段落**：shape 走 RichTextPanel，纯文本控件自动回退为换行字符串 |
 | `axure_panel_states` / `axure_add_panel_state` | **动态面板状态**：读状态列表 / 复制新增状态（可改名） |
-| `axure_set_table` | **表格**：设置行列与单元格文字（二维数组，行优先） |
-| `axure_set_image` | **图片**：把 base64 图片嵌进 ImageBox（注意：同一控件只能设一次，换图需重建控件） |
+| `axure_set_table` | **表格**：设置行列与单元格文字（二维数组，行优先）；Mac 支持行列尺寸，最多 10,000 个单元格 |
+| `axure_set_image` | **图片**：把 base64 图片嵌进 ImageBox；Mac 可原位换图并通过 SHA-256 校验，Windows 同一控件只接受首次赋值 |
 | `axure_set_page_note` / `axure_get_page_notes` | **页面备注**（Notes 面板的字段，如 Page overview） |
-| `axure_set_widget_note` / `axure_get_widget_notes` | **控件备注**（挂在图层注解散列、按 OwnerId 绑定控件） |
+| `axure_set_widget_note` / `axure_get_widget_notes` | **控件备注**（按 OwnerId 绑定控件）；Mac 可与页面备注同时存在，并随保存/重启保留 |
 | `axure_save_as` | 另存为（先落盘再复制文件；Axure 自带的另存为会弹模态框把桥卡死） |
 
 > 想看这些工具串起来能做什么：**[docs/DEMO.md](docs/DEMO.md)** —— 从零搭一个多页原型的完整流程
@@ -64,6 +78,19 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 
 ## 安装
+
+macOS 使用 net8 桥：
+
+```sh
+dotnet build bridge/AxureBridge.csproj -c Debug -f net8.0
+python3 -m axure_mcp.launcher /absolute/path/to/disposable-test.rp
+```
+
+launcher 会校验 `.rp` 路径，并在 POSIX 上把 Axure 放进独立会话；启动它的终端或 AI 会话退出后，
+注入版 Axure 仍可继续使用。已经运行的桥会被复用。
+
+完整 MCP 配置、App/可执行文件覆盖、真实 Axure 回归与边界见
+**[docs/MACOS.md](docs/MACOS.md)**。Windows 安装如下。
 
 需要：
 
@@ -77,7 +104,7 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 编译注入桥：
 
 ```powershell
-dotnet build bridge\AxureBridge.csproj -c Debug      # 桥要自己编译，仓库里不带二进制
+dotnet build bridge\AxureBridge.csproj -c Debug -f net10.0      # 桥要自己编译，仓库里不带二进制
 copy bridge\bin\Debug\net10.0\AxureBridge.dll bridge\dist\AxureBridge.dll
 # 注意：axure-hook.ps1 注入的是 Debug 产物；改了桥代码一定要重新 build，
 #      否则跑的还是旧桥（会报 "method ... not found" 这种莫名其妙的错）
@@ -113,8 +140,8 @@ $env:DOTNET_STARTUP_HOOKS = "<仓库路径>\bridge\dist\AxureBridge.dll"
 
 三条使用前提：
 
-1. **必须在 Kali/演练专用的 Windows 虚拟机里跑，不要在日常办公电脑上**。桥会把 Axure 进程的
-   任意方法暴露给本机 127.0.0.1:41999，安全软件也容易误报。
+1. **Windows 上游要求使用 Kali/演练专用的虚拟机；Mac 只应在这台开发机的受控账号中运行。**
+   桥会把 Axure 进程的任意方法暴露给本机 127.0.0.1:41999，安全软件也容易误报。
 2. Axure 必须**由本项目的脚本启动**（注入 `DOTNET_STARTUP_HOOKS`），已经在跑的窗口接不上去。
 3. 一次只让一个 AI 会话操作一个 `.rp`，多会话并发会互相抢窗口。
 
@@ -122,7 +149,7 @@ $env:DOTNET_STARTUP_HOOKS = "<仓库路径>\bridge\dist\AxureBridge.dll"
 
 ```powershell
 cd <仓库路径>
-python tools\axure-hook.ps1 -OpenFile 你的文件.rp   # 或直接让 MCP 自动拉起
+powershell -ExecutionPolicy Bypass -File tools\axure-hook.ps1 -OpenFile 你的文件.rp   # 或直接让 MCP 自动拉起
 python tools\regression_ascii.py                   # 回归自检
 python tools\demo_v2.py                            # 从零生成一个演示原型
 ```
@@ -157,20 +184,20 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
 | 页面：新建 / 删除 / 重命名 / 移动 | ✅ | 文件夹同样支持 |
-| 控件：新建（18 类）/ 改文字与几何 / 删除 | ✅ | 新建走编辑器管线，可 Ctrl+Z |
+| 控件：新建 / 改文字与几何 / 删除 | 分平台 | Windows 新建 18 类且可 Ctrl+Z；Mac 新建 16 类，直接模型插入不产生撤销项 |
 | 样式：填充 / 边框 / 圆角 / 透明度 / 字体字号 / 粗斜体 / 对齐 / 内边距 / 行距字距 | ✅ | 读写都行 |
 | 交互：事件 + 用例 + 动作 | ✅ 7 个动作 | navigate / close / wait / set_opacity / move / rotate / resize |
 | 分组 / 解散 | ✅ | 解散用「复制回页面再删 Layer」实现 |
 | 对齐 / 分布 / 等宽等高 | ✅ | 纯几何 |
-| 页面备注 | ✅ | 与控件备注互斥（代码里已加护栏，冲突直接报错） |
-| 控件备注 | ❌ | 写入与内存读回正常，但**存盘重启后读不回来**；需要备注请用页面级 |
-| 图片（ImageBox 内嵌 PNG） | ✅ | 同一控件只能赋值一次，换图要重建 |
+| 页面备注 | ✅ | Windows 与控件备注互斥；Mac 可与控件备注同时使用并持久化 |
+| 控件备注 | 分平台 | Windows 当前存盘重载不可靠；**Mac 已验证多个控件备注与页面备注并存** |
+| 图片（ImageBox 内嵌 PNG） | ✅ | Windows 同一控件只接受首次赋值；**Mac 支持同尺寸原位换图、字节读回和 SHA-256** |
 | 表格 | ✅ | 行列 + 单元格文字 |
 | 富文本 / 多段落 | ✅ | shape 走 RichTextPanel，纯文本控件走换行 |
 | 列表项（下拉/列表框） | ✅ | 整表替换 `Options` |
 | 动态面板状态：读 / 新增 / 改名 | ✅ | 新增靠复制已有状态 |
-| 撤销 | ✅ | 等价 Ctrl+Z |
-| 另存为 / 渲染导出 PNG | ✅ | 另存为 = 落盘后复制文件 |
+| 撤销 | 分平台 | Windows 等价 Ctrl+Z；Mac 直接模型插入不产生撤销项，因此不对外提供 |
+| 另存为 / 渲染导出 PNG | 分平台 | 另存为 = 落盘后复制文件；PNG 工具仅 Windows，Mac 原生 Preview 可人工验证 |
 | 母版 / 组件 | ❌ | 手写 `mJsm` 载荷过不了序列化校验，且失败会污染内存文档 |
 | Redo | ❌ | 会阻塞 UI 线程，桥失联 |
 | 其余 8 个交互动作 | ❌ | 存盘后动作节点被 Axure 静默丢弃 |
