@@ -401,12 +401,47 @@ TOOLS += PAGE_TOOLS + [
     {
         "name": "axure_group",
         "description": ("Group widgets into a Layer (Axure's group object) covering their bounding box. "
-                        "Ungrouping is not exposed yet - it still destabilises the document."),
+                        "Use axure_group_add / axure_group_remove to change membership afterwards."),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "names": {"type": "array", "items": {"type": "string"}},
                 "group_name": {"type": "string"},
+                "page_id": {"type": "string"},
+                "page_name": {"type": "string"},
+            },
+            "required": ["names"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "axure_group_add",
+        "description": ("Add widgets to an existing group. Members keep their absolute position, "
+                        "identity, notes and interactions."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Group name."},
+                "widget_id": {"type": "integer"},
+                "names": {"type": "array", "items": {"type": "string"},
+                          "description": "Widgets to add."},
+                "page_id": {"type": "string"},
+                "page_name": {"type": "string"},
+            },
+            "required": ["names"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "axure_group_remove",
+        "description": "Remove widgets from a group; they stay on the page at their position.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Group name."},
+                "widget_id": {"type": "integer"},
+                "names": {"type": "array", "items": {"type": "string"},
+                          "description": "Widgets to remove."},
                 "page_id": {"type": "string"},
                 "page_name": {"type": "string"},
             },
@@ -436,6 +471,30 @@ TOOLS += PAGE_TOOLS + [
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "axure_style_page",
+        "description": ("Write page-level style. fill: background colour '#RRGGBB' or '#AARRGGBB' "
+                        "(the Page Styles panel's canvas colour)."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "fill": {"type": "string"},
+                "page_id": {"type": "string"},
+                "page_name": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "axure_get_page_style",
+        "description": ("Read the page style (background fill as #RRGGBB). The persisted value is "
+                        "authoritative right after a save; the live read may lag a fresh write."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"page_id": {"type": "string"}, "page_name": {"type": "string"}},
             "additionalProperties": False,
         },
     },
@@ -912,7 +971,8 @@ def tool_axure_get_page(args: dict) -> dict:
     package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
     widgets = app.widgets(package, deep=args.get("deep", False))
     records = [{k: w.get(k) for k in
-                ("handle", "Name", "FriendlyTypeName", "Text", "X", "Y", "Width", "Height", "Visible")}
+                ("handle", "Name", "FriendlyTypeName", "Text", "X", "Y", "Width", "Height",
+                 "Visible", "group")}
                for w in widgets]
     if hasattr(app, "widget_content"):
         for record in records:
@@ -1271,6 +1331,39 @@ def tool_axure_ungroup(args: dict) -> dict:
     return _json({"page": page_name, **result, "saved": True})
 
 
+def tool_axure_group_add(args: dict) -> dict:
+    app = _app()
+    package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
+    result = app.group_add(package, args.get("name") or "", args.get("widget_id"),
+                           list(args["names"]))
+    app.save(package)
+    return _json({"page": page_name, **result, "saved": True})
+
+
+def tool_axure_group_remove(args: dict) -> dict:
+    app = _app()
+    package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
+    result = app.group_remove(package, args.get("name") or "", args.get("widget_id"),
+                              list(args["names"]))
+    app.save(package)
+    return _json({"page": page_name, **result, "saved": True})
+
+
+def tool_axure_style_page(args: dict) -> dict:
+    app = _app()
+    package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
+    applied = app.set_page_style(package, args.get("fill"))
+    app.save(package)
+    return _json({"page": page_name, "applied": applied, "saved": True,
+                  "note": "the in-session canvas read may lag; the persisted value is authoritative"})
+
+
+def tool_axure_get_page_style(args: dict) -> dict:
+    app = _app()
+    package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
+    return _json({"page": page_name, **app.page_style(package)})
+
+
 HANDLERS = {
     "axure_status": tool_axure_status,
     "axure_list_pages": tool_axure_list_pages,
@@ -1312,6 +1405,10 @@ HANDLERS = {
     "axure_save_as": tool_axure_save_as,
     "axure_group": tool_axure_group,
     "axure_ungroup": tool_axure_ungroup,
+    "axure_group_add": tool_axure_group_add,
+    "axure_group_remove": tool_axure_group_remove,
+    "axure_style_page": tool_axure_style_page,
+    "axure_get_page_style": tool_axure_get_page_style,
 }
 
 

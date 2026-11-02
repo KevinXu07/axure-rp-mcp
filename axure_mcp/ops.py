@@ -378,12 +378,39 @@ class Axure:
         """Widgets on the page. deep=True also walks into groups/layers.
 
         Deep walking stays opt-in: touching the DiagramObjects of every child object (table cells,
-        panel states) is expensive and, for some containers, can destabilise the app.
+        panel states) is expensive and, for some containers, can destabilise the app. Axure keeps
+        group members in the page's global collection AND in the layer's membership list, so the
+        deep walk deduplicates by identity and tags members with their parent group.
         """
         out = []
-        for handle in self._collect_handles(self.objects(package), deep):
-            info = self.widget_info(handle)
-            out.append(info)
+        seen = set()
+
+        def walk(objects: int, group: str | None) -> None:
+            for item in self.b.iter(objects, limit=2000) or []:
+                handle = item.get("$h") if isinstance(item, dict) else None
+                if not handle:
+                    continue
+                try:
+                    ident = self.b.identity(handle)["id"]
+                except BridgeError:
+                    ident = None
+                if ident is not None and ident in seen:
+                    continue
+                if ident is not None:
+                    seen.add(ident)
+                info = self.widget_info(handle)
+                if group:
+                    info["group"] = group
+                out.append(info)
+                if deep:
+                    try:
+                        inner = self.b.get_on(handle, "DiagramObjects")
+                    except BridgeError:
+                        continue
+                    if isinstance(inner, dict) and "$h" in inner:
+                        walk(inner["$h"], info.get("Name") or group)
+
+        walk(self.objects(package), None)
         return out
 
     def _collect_handles(self, objects: int, deep: bool = False, depth: int = 0) -> list[int]:
@@ -1279,6 +1306,45 @@ class Axure:
         return {"name": name, "members": names,
                 "bounds": {"x": left, "y": top, "width": right - left, "height": bottom - top}}
 
+    def group_add(self, package: int, name: str = "", handle: int | None = None,
+                  names: list[str] | None = None) -> dict:
+        """Add widgets to an existing group.
+
+        On Windows a Layer OWNS its members: they are removed from the page's global object
+        collection and live only in the layer's own list (unlike the Mac build, where members
+        stay in the global collection). Skipping the Remove leaves a dangling membership entry
+        that silently disappears on reload.
+        """
+        layer = self.resolve_widget(package, name, handle)
+        layer_name = self.widget_info(layer).get("Name")
+        objects = self.objects(package)
+        added = []
+        for item in names or []:
+            widget = self.resolve_widget(package, item)
+            try:
+                self.b.invoke_on(objects, "Remove", [{"$h": widget}])
+            except BridgeError:
+                pass
+            self.b.invoke_on(layer, "Add", [{"$h": widget}, 0])
+            added.append(self.widget_info(widget).get("Name"))
+        return {"group": layer_name, "added": added}
+
+    def group_remove(self, package: int, name: str = "", handle: int | None = None,
+                     names: list[str] | None = None) -> dict:
+        """Remove widgets from a group; they return to the page's global collection in place."""
+        layer = self.resolve_widget(package, name, handle)
+        layer_name = self.widget_info(layer).get("Name")
+        objects = self.objects(package)
+        removed = []
+        for item in names or []:
+            widget = self.resolve_widget(package, item)
+            box = self._box(widget)
+            self.b.invoke_on(layer, "Remove", [{"$h": widget}])
+            self.b.invoke_on(objects, "Add", [{"$h": widget}])
+            self.set_rect(widget, box["x"], box["y"], box["w"], box["h"])
+            removed.append(self.widget_info(widget).get("Name"))
+        return {"group": layer_name, "removed": removed}
+
     def ungroup(self, package: int, name: str = "", handle: int | None = None) -> dict:
         """Dissolve a group by copying its members back onto the page, then deleting the layer.
 
@@ -1318,6 +1384,43 @@ class Axure:
         except Exception:
             pass
         return {"dissolved": layer_name, "members": restored}
+
+    # ---------- page style ----------
+
+    def page_style(self, package: int) -> dict:
+        """Read the page's background fill.
+
+        The canvas colour lives on the page style bag (package.MyStyle) and surfaces through
+        diagram.Fill. NOTE: the in-session read lags behind a write (the diagram caches the
+        derived fill); the persisted value is authoritative and correct after save/reload.
+        """
+        diagram = self.diagram(package)
+        fill = self.b.get_on(diagram, "Fill")
+        out: dict = {}
+        if isinstance(fill, dict) and "$h" in fill:
+            text = self.b.identity(fill["$h"]).get("str") or ""
+            try:
+                rgba = text.split(":", 1)[1].split("--")
+                rgb = [int(part, 16) for part in rgba[0].split(",")]
+                out["fill"] = "#{:02X}{:02X}{:02X}".format(*rgb[:3])
+                if len(rgba) > 1:
+                    out["opacity"] = int(rgba[1], 16) / 255.0
+            except (IndexError, ValueError):
+                pass
+        return out
+
+    def set_page_style(self, package: int, fill=None) -> dict:
+        """Write page-level style properties. fill: '#RRGGBB' / '#AARRGGBB' background colour.
+
+        The write goes through the page style bag (package.MyStyle, WtTU.YtTy) - the same property
+        pipeline the Page Styles panel uses. Like every style write, pass a freshly built fill.
+        """
+        applied: dict = {}
+        if fill is not None:
+            kstyle = self.b.get_on(package, "MyStyle")["$h"]
+            self.b.invoke_on(kstyle, "YtTy", ["FILL", {"$h": self._fill(fill)}, True])
+            applied["fill"] = fill
+        return applied
 
     # ---------- history ----------
 

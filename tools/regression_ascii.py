@@ -127,6 +127,9 @@ def main():
         ("add_btn3", "axure_add_widget", {"kind": "button", "name": "btn3", "text": "Third",
                                           "x": 60, "y": 200, "width": 180, "height": 40,
                                           "page_name": PAGE_A}),
+        ("add_btn4", "axure_add_widget", {"kind": "button", "name": "btn4", "text": "Fourth",
+                                          "x": 60, "y": 260, "width": 180, "height": 40,
+                                          "page_name": PAGE_A}),
         ("add_img", "axure_add_widget", {"kind": "image", "name": "img", "x": 460, "y": 60,
                                          "width": 140, "height": 90, "page_name": PAGE_A}),
         ("set_image", "axure_set_image", {"name": "img", "image_base64": png, "filename": "v.png",
@@ -165,6 +168,13 @@ def main():
         ("group", "axure_group", {"names": ["btn2", "btn3"], "group_name": "grp",
                                   "page_name": PAGE_A}),
         ("ungroup", "axure_ungroup", {"name": "grp", "page_name": PAGE_A}),
+        ("regroup", "axure_group", {"names": ["btn2", "btn3"], "group_name": "grp2",
+                                    "page_name": PAGE_A}),
+        ("group_add", "axure_group_add", {"name": "grp2", "names": ["btn4"],
+                                          "page_name": PAGE_A}),
+        ("group_remove", "axure_group_remove", {"name": "grp2", "names": ["btn3"],
+                                                "page_name": PAGE_A}),
+        ("page_style", "axure_style_page", {"fill": "#F5F0E6", "page_name": PAGE_A}),
         ("page_note", "axure_set_page_note", {"text": NOTE, "page_name": PAGE_A}),
         ("get_page_notes", "axure_get_page_notes", {"page_name": PAGE_A}),
         ("widget_note_a", "axure_set_widget_note", {"name": "btn", "text": WNOTE_A,
@@ -228,6 +238,8 @@ def main():
         ("page_tree", "axure_page_tree", {}),
         ("list_pages", "axure_list_pages", {}),
         ("get_page", "axure_get_page", {"page_name": PAGE_A}),
+        ("get_page_deep", "axure_get_page", {"page_name": PAGE_A, "deep": True}),
+        ("page_style_read", "axure_get_page_style", {"page_name": PAGE_A}),
         ("style", "axure_get_widget_style", {"name": "btn", "page_name": PAGE_A}),
         ("interactions", "axure_get_interactions", {"name": "btn", "page_name": PAGE_A}),
         ("page_notes", "axure_get_page_notes", {"page_name": PAGE_A}),
@@ -295,6 +307,13 @@ def main():
     record("B:image_bytes", image_before == image_after and bool(image_after),
            f"{image_before} -> {image_after}")
 
+    deep_records = got["get_page_deep"].get("widgets", [])
+    grp2_members = sorted(w["Name"] for w in deep_records if w.get("group") == "grp2")
+    record("B:group_edit", grp2_members == ["btn2", "btn4"],
+           "grp2 members after add/remove: " + str(grp2_members))
+    style_read = got["page_style_read"].get("fill")
+    record("B:page_style", style_read == "#F5F0E6", str(got["page_style_read"]))
+
     states = got["panel"].get("states", [])
     record("B:panel_states", len(states) == 2, str(states))
 
@@ -304,7 +323,8 @@ def main():
     record("B:save_as", os.path.exists(COPY), "copy exists")
 
     order = ("B:page_tree", "B:move_page", "B:widgets", "B:update_widget", "B:style",
-             "B:interaction", "B:ix_targets", "B:page_note", "B:widget_note", "B:widget_note_a",
+             "B:interaction", "B:ix_targets", "B:group_edit", "B:page_style",
+             "B:page_note", "B:widget_note", "B:widget_note_a",
              "B:copy_widget", "B:image_bytes", "B:panel_states", "B:image",
              "B:table", "B:render", "B:save_as")
     passed = 0

@@ -31,13 +31,14 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 ## 平台支持
 
-Windows 注册 40 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
+Windows 注册 44 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
 .NET 8.0.11** 上通过真实 stdio MCP 调用、原生画布与 Preview、保存后退出并用新 PID 重启读回验证：
 支持 **35 个工具、16 类控件创建**。页面/文件夹、列表、图片替换、表格、富文本、动态面板状态、
 页面与控件备注、分组、层级、7 类交互动作均可持久化。
 
 Mac 暂不宣称 `axure_render_page` 与 `axure_undo`（也不提供 Windows 新增的
-`axure_copy_widget` / `axure_get_widget_image` / `axure_redo`，以及 Windows 已扩展的其余
+`axure_copy_widget` / `axure_get_widget_image` / `axure_redo` / `axure_group_add` /
+`axure_group_remove` / `axure_style_page` / `axure_get_page_style`，以及 Windows 已扩展的其余
 10 类交互动作）；`connector`、`textlink` 创建会被拒绝。
 其他 Mac 版本会在访问文档模型前明确报版本不支持，Intel Mac 尚未实测。
 
@@ -192,11 +193,13 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 | 样式：填充 / 边框 / 圆角 / 透明度 / 字体字号 / 粗斜体 / 对齐 / 内边距 / 行距字距 | ✅ | 读写都行 |
 | 交互：事件 + 用例 + 动作 | ✅ **17 个动作** | navigate / close / wait / set_opacity / move / rotate / resize / show_hide / scroll_to / focus / set_image / apply_style / enable_disable / link_frame / panel_order / expand_collapse / set_panel_state，全部过「保存→重启」审计，读回带目标与值 |
 | 分组 / 解散 | ✅ | 解散用「复制回页面再删 Layer」实现 |
+| 组成员编辑 | 分平台 | **Windows ✅（新增）**：`axure_group_add` / `axure_group_remove` 向已有组加/移成员，跨重启保真；Mac 未提供 |
+| 页面样式（背景色） | 分平台 | **Windows ✅（新增）**：`axure_style_page` / `axure_get_page_style` 读写画布填充色；Mac 未提供 |
 | 对齐 / 分布 / 等宽等高 | ✅ | 纯几何 |
 | 页面备注 | ✅ | 与控件备注可同页共存，互不影响 |
 | 控件备注 | 分平台 | **Windows ✅（新增）**：与页面备注共存、保存重启后保留；Mac ✅ 已验证多个控件备注与页面备注并存 |
 | 控件复制 | 分平台 | **Windows ✅（新增）**：走 Axure 自己的剪贴板管线，文本/样式/几何/交互全带过去，可 Ctrl+Z；Mac 暂不提供 |
-| 图片（ImageBox 内嵌 PNG） | ✅ | Windows 同一控件只接受首次赋值；**Mac 支持同尺寸原位换图、字节读回和 SHA-256** |
+| 图片（ImageBox 内嵌 PNG） | 分平台 | Windows 首次赋值后**暂无法原位换图**（写入需编辑器样式事务上下文，见 RE 文档 26.1），换图请删掉重建；**Mac 支持同尺寸原位换图、字节读回和 SHA-256** |
 | 图片读回 | 分平台 | **Windows ✅（新增）**：`axure_get_widget_image` 读回字节数与 SHA-256（可选 base64）；Mac 由 `axure_get_page` 返回内容读回 |
 | 表格 | ✅ | 行列 + 单元格文字 |
 | 富文本 / 多段落 | ✅ | shape 走 RichTextPanel，纯文本控件走换行 |

@@ -1184,3 +1184,53 @@ scope 是 VJs7.cJsP（局部变量作用域集合），字面量值传空集合�
 10.3 记录的"Redo 卡死进程"不再成立：旧观察来自 worker 线程直跑时代；
 所有调用改走 Control.Invoke 封送（24.1）后，Redo.RHhc() 0.04s 返回，
 撤销栈行为正确（加控件 → 撤销 → 重做，计数 9→10→9→10）。xure_redo 已作为工具开放。
+## 26. 组成员编辑、页面背景、图片换图与母版（第四轮）
+
+### 26.1 Windows 图片原位换图：未打通，但失败点已精确定位
+
+- `ImageBox.Image` 的 setter 走 `KJm7.pJ0w(PName.IMAGE, value)`，而 pJ0w 的**默认参数路径
+  只发变更通知（aJmX），不写值**——写值分支（`bJOJ().ltAo`）在控制流平坦化的死分支里，
+  只有第三参 `true`（编辑器管线）才会进入。
+- 编辑器自己的设图命令是 `WVz0`（qVzp）：构造收 Client，`kVz8(Dictionary<KJm7, QtaH>)`
+  装载，`trhX()` 异步提交——它在**样式事务上下文里**对选中控件调
+  `pJ0w(PName.IMAGE, qtaH, true)`。脱离事务直接调 pJ0w(true)、对 `vJOH()` 样式包调
+  `ltAo(PName.IMAGE, ...)`、对 `MyStyle`（TtuV.ituB）直设 Image 属性，全部无效
+  （描述符 Overridden=true 但值不变）。
+- `oJ0u(PName, value, bt7H)` 按自适应视图写（bt7H = adaptive-view 选择器，
+  可从文档视图列表取默认视图），是**下一步最值得试的入口**；
+  `QtaH.utXt` 静态空图是官方的"清除图"哨兵。
+- 当前工具口径：Windows 换图 = 删掉控件重建（set_image 的既有提示）。
+
+### 26.2 组成员编辑（新增 axure_group_add / axure_group_remove）
+
+Windows 与 Mac 的 Layer 语义**相反**：Mac 的 Layer 只是成员表（成员留在页面全局集合），
+**Windows 的 Layer 拥有成员**——建组时成员从页面全局集合 Remove、只住在层里
+（`ops.group` 的既有顺序是对的）。由此：
+
+- `group_add` = `objects.Remove(widget)` → `layer.Add(widget, 0)`。
+  跳过 Remove 会在层里留下悬空成员条目，**重载后静默丢失**
+  （实验：layer.DiagramObjects 数出 3 条、实际只活 2 条）。
+- `group_remove` = `layer.Remove(widget)` → `objects.Add(widget)` → 重写一次矩形。
+  旧笔记（11.3/21.x）"Remove+Add 会炸进程"是 worker 线程时代的观察；
+  UI 封送修复后该顺序稳定（实验通过含重启读回）。
+- 成员坐标保持绝对值；`widgets(deep=True)` 现在按身份去重并给成员带上 `group` 字段
+  （此前同一控件会出现两次）。
+
+### 26.3 页面背景色（新增 axure_style_page / axure_get_page_style）
+
+页面画布颜色住在页面样式包 `package.MyStyle`（`utvK.KtvL : WtTU`，TypeName=Axure:PageStyle），
+读写走 WtTU 的属性管线：**`YtTy(PName.FILL, fill, true)`**（`this[PName].u5jN`）。
+`diagram.Fill` 是只读的派生视图；写入后**内存读会滞后（显示旧白）**，
+但落盘重载后 `diagram.Fill` 返回写入的颜色（实验：#F5F0E6 → "uHV0: F5,F0,E6--FF"）。
+工具返回里注明"落盘值为准"。fill 对象沿用 widget 的 `IHVp.uHV0` 实心填充（每次新建，防共享污染）。
+
+### 26.4 母版：放置路由已定位，卡在"没有母版可放"
+
+- 页面上的母版实例是 **`ReferenceDiagramObject`**，两参构造
+  `(package, referredPackage)` 直接收**母版的包对象**（IJvQ）——
+  而站点树里 component 节点的载荷（`mJsm`）本身就是那个包对象。
+- 放置本身可复用 `_insert_widget` 的编辑器管线（xFUI + zjzI）。
+- 卡点：仓库里没有含母版的测试文件（17 节的失败实验产物不算），
+  而**创建母版**（17 节的手写 mJsm 载荷过不了序列化校验）是未解的另一半；
+  客户端级创建入口在 `M3m.agL`（`new mJsm(nIXw(), eIX8())` + ytOj(id) + 站点节点插入），
+  下轮从"新建母版对话框"的 UI 命令入手找它的包装层。
