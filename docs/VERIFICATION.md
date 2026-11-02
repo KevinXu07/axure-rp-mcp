@@ -1,6 +1,6 @@
 # Verification report
 
-Generated: 2026-11-02 02:19
+Generated: 2026-11-03 02:11
 File: test/verify.rp (same file before and after the restart)
 
 Rule: an item passes only if it can be read back after save -> kill -> relaunch.
@@ -14,7 +14,8 @@ Rule: an item passes only if it can be read back after save -> kill -> relaunch.
 | widgets | PASS | 9 top-level widgets, group=False |
 | update_widget | PASS | Title updated |
 | style | PASS | {'Fill': '#2F6FED', 'CornerRadius': 8, 'Bold': 'TRUE'} |
-| interaction | PASS | ['Axure:InteractionWaitAction'] |
+| interaction | PASS | ['Axure:InteractionSetOpacityAction', 'Axure:InteractionSetPanelStateA |
+| ix_targets | PASS | fade=['Disable', 'Hide'] state=['2'] opacity=['40'] |
 | page_note | PASS | ['regression page note'] |
 | widget_note | PASS | [{'Note': 'button note text'}] |
 | widget_note_a | PASS | page note and widget note coexist; ['btn'] |
@@ -26,7 +27,7 @@ Rule: an item passes only if it can be read back after save -> kill -> relaunch.
 | render | PASS | png ok |
 | save_as | PASS | copy exists |
 
-Phase B: 16/16
+Phase B: 17/17
 
 ## Phase A - write calls accepted
 
@@ -59,6 +60,10 @@ Phase B: 16/16
 | get_widget_notes | PASS |  |
 | group | PASS |  |
 | interaction | PASS |  |
+| ix_disable | PASS |  |
+| ix_hide | PASS |  |
+| ix_opacity | PASS |  |
+| ix_panel_state | PASS |  |
 | list_pages | PASS |  |
 | move_page | PASS |  |
 | page_note | PASS |  |
@@ -79,4 +84,4 @@ Phase B: 16/16
 | widget_note_a | PASS |  |
 | z_order | PASS |  |
 
-Phase A: 46
+Phase A: 50

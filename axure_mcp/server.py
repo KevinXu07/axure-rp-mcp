@@ -290,8 +290,11 @@ TOOLS += PAGE_TOOLS + [
     },
     {
         "name": "axure_add_interaction",
-        "description": ("Attach an interaction: widget --event--> case --action--> target. "
-                        "Currently supports action=navigate (open another page)."),
+        "description": ("Attach an interaction: widget --event--> case --action--> target. All 17 "
+                        "action kinds persist across save/reload. set_panel_state takes value=state "
+                        "name or 1-based index; set_opacity takes 0-1 (stored as a percent); "
+                        "move/rotate/resize take a number applied to the target; enable_disable "
+                        "takes mode; panel_order/expand_collapse take value 1/0."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -301,19 +304,20 @@ TOOLS += PAGE_TOOLS + [
                           "description": "OnClick, OnMouseOver, OnLoad, OnShow, OnHide, ..."},
                 "action": {"type": "string",
                            "enum": ["navigate", "close", "wait", "set_opacity", "move", "rotate",
-                                    "resize"],
-                           "description": ("Only these seven survive a save/reload audit. Nine other "
-                                           "actions (show_hide, scroll_to, focus, set_image, apply_style, "
-                                           "enable_disable, link_frame, panel_order, expand_collapse, "
-                                           "set_panel_state) are rejected: Axure drops them on save or "
-                                           "the file stops loading.")},
+                                    "resize", "show_hide", "scroll_to", "focus", "set_image",
+                                    "apply_style", "enable_disable", "link_frame", "panel_order",
+                                    "expand_collapse", "set_panel_state"],
+                           "description": ("All actions survive a save/reload audit; targets are "
+                                           "registered with identity-safe paths.")},
                 "wait_ms": {"type": "integer", "description": "Milliseconds, for action=wait."},
-                "target_widget": {"type": "string", "description": "Widget name, for scroll_to/focus/show_hide."},
+                "target_widget": {"type": "string",
+                                  "description": "Widget/panel name for every target-taking action."},
                 "fade": {"type": "string", "enum": ["Show", "Hide", "Toggle"],
                          "description": "For action=show_hide."},
-                "value": {"type": "number",
-                          "description": ("Number for set_opacity (0-1) / move / rotate (deg) / resize (factor); "
-                                          "1/0 for panel_order and expand_collapse.")},
+                "value": {
+                    "description": ("set_opacity (0-1) / move / rotate (deg) / resize as numbers; "
+                                    "1/0 for panel_order and expand_collapse; for set_panel_state "
+                                    "pass the 1-based state index or the state name (string).")},
                 "mode": {"type": "string", "enum": ["Enable", "Disable", "Toggle"],
                          "description": "For action=enable_disable."},
                 "target_page_id": {"type": "string", "description": "Page id to open."},
@@ -605,6 +609,12 @@ TOOLS += PAGE_TOOLS + [
         "name": "axure_undo",
         "description": ("Undo the last edit (same command as Ctrl+Z). Widgets created by this server "
                         "go through Axure's own insert pipeline, so they are undoable."),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "axure_redo",
+        "description": ("Redo the last undone edit (same command as Ctrl+Y). Works again now that "
+                        "every bridge call marshals onto Axure's UI thread."),
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
@@ -1239,6 +1249,12 @@ def tool_axure_undo(_args: dict) -> dict:
     return _json({"undone": True})
 
 
+def tool_axure_redo(_args: dict) -> dict:
+    app = _app()
+    app.redo()
+    return _json({"redone": True})
+
+
 def tool_axure_group(args: dict) -> dict:
     app = _app()
     package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
@@ -1281,6 +1297,7 @@ HANDLERS = {
     "axure_set_list_items": tool_axure_set_list_items,
     "axure_open_file": tool_axure_open_file,
     "axure_undo": tool_axure_undo,
+    "axure_redo": tool_axure_redo,
     "axure_panel_states": tool_axure_panel_states,
     "axure_add_panel_state": tool_axure_add_panel_state,
     "axure_same_size": tool_axure_same_size,

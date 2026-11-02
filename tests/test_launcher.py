@@ -9,12 +9,17 @@ from axure_mcp import launcher, paths
 
 class LauncherTests(unittest.TestCase):
     def test_macos_executable_and_bundle_override(self):
+        # the code under test normalises the bundle with the HOST os.path and joins the rest with
+        # os.path.join; on Windows ntpath stays active even under the darwin patch, so the
+        # expectation must be built through the same host primitives
+        expected_bundle = (os.path.normpath('/Applications/Axure RP 11.app')
+                           + os.sep + os.sep.join(('Contents', 'MacOS', 'Axure RP 11')))
         with patch('sys.platform','darwin'), patch.dict(os.environ,{},clear=True):
             self.assertEqual(launcher.exe_path(),'/Applications/Axure RP 11.app/Contents/MacOS/Axure RP 11')
             os.environ['AXURE_EXE']='/Applications/Axure RP 11.app'
-            self.assertEqual(launcher.exe_path(),os.path.join('/Applications/Axure RP 11.app','Contents','MacOS','Axure RP 11'))
+            self.assertEqual(launcher.exe_path(),expected_bundle)
             os.environ['AXURE_EXE']='/Applications/Axure RP 11.app/'
-            self.assertEqual(launcher.exe_path(),os.path.join('/Applications/Axure RP 11.app','Contents','MacOS','Axure RP 11'))
+            self.assertEqual(launcher.exe_path(),expected_bundle)
             self.assertTrue(paths.data_dir().endswith(os.path.join('Library','Application Support','Axure')))
 
     def test_macos_bridge_never_selects_windows_dist(self):

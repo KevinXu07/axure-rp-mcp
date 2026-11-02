@@ -570,6 +570,17 @@ class Axure:
 
     def interactions(self, widget: int) -> list[dict]:
         ix = self._ix_map(widget)
+        names = {}
+        package = None
+        try:
+            package = self.active_package()
+            for handle in self._collect_handles(self.objects(package), deep=True):
+                try:
+                    names[self.b.invoke_on(handle, "Mtn3")] = self.b.get_on(handle, "Name")
+                except BridgeError:
+                    continue
+        except BridgeError:
+            pass
         events = self.b.invoke_on(ix, "SJuj")
         out = []
         for item in (self.b.iter(events["$h"], limit=100) if isinstance(events, dict) else []):
@@ -599,10 +610,61 @@ class Axure:
                             info[prop] = self.b.get_on(ah, prop)
                         except BridgeError:
                             pass
+                    targets = self._action_targets(ah, names)
+                    if targets:
+                        info["targets"] = targets
                     entry["actions"].append(info)
                 record["cases"].append(entry)
             out.append(record)
         return out
+
+    def _action_targets(self, action: int, names: dict) -> list[dict] | None:
+        """Per-target readback for path-info actions (bNAk) and the scroll_to path."""
+        out = []
+        try:
+            mapping = self.b.get_on(action, "bNAk")
+            entries = (self.b.iter(mapping["$h"], limit=100)
+                       if isinstance(mapping, dict) and "$h" in mapping else [])
+            for kvp in entries or []:
+                kh = kvp.get("$h") if isinstance(kvp, dict) else None
+                if not kh:
+                    continue
+                entry = {}
+                try:
+                    key = self.b.get_on(kh, "Key")["$h"]
+                    try:
+                        marker = self.b.get_on(key, "xJfE")
+                    except BridgeError:
+                        marker = self.b.identity(key).get("str")
+                    if names.get(marker):
+                        entry["widget"] = names.get(marker)
+                    else:
+                        entry["widget"] = str(marker)
+                except BridgeError:
+                    pass
+                try:
+                    value = self.b.get_on(kh, "Value")["$h"]
+                    for field in ("FadeActionType", "EnableAction", "StateValueText",
+                                  "BringToFront", "Expand", "OpacityText"):
+                        try:
+                            entry[field] = self.b.get_on(value, field)
+                        except BridgeError:
+                            pass
+                except BridgeError:
+                    pass
+                if entry:
+                    out.append(entry)
+        except BridgeError:
+            pass
+        if not out:
+            try:
+                path = self.b.get_on(action, "TargetWidgetPath")
+                if isinstance(path, dict) and "$h" in path:
+                    marker = self.b.get_on(path["$h"], "xJfE")
+                    out.append({"widget": names.get(marker) or str(marker)})
+            except BridgeError:
+                pass
+        return out or None
 
     def add_interaction(self, package: int, name: str = "", handle: int | None = None,
                         event: str = "OnClick", action: str = "navigate",
@@ -646,139 +708,186 @@ class Axure:
 
         inserted = 0
         for spec in actions:
-            handle_action = self._build_action(
+            handle_action, deferred = self._build_action(
                 package, spec.get("action", "navigate"), spec.get("target_page_id"),
                 spec.get("link_type", "Current"), spec.get("wait_ms"),
                 spec.get("target_widget"), spec.get("fade"), spec.get("value"),
                 spec.get("mode"))
             self.b.invoke_on(ix, "TNFt", [None, {"$h": case_node["$h"]}, 0,
                                            {"$h": handle_action}])
+            if deferred:
+                # value setters need the case context, so they run after the insertion
+                self._apply_deferred(handle_action, deferred)
             inserted += 1
         return {"widget": self.widget_info(widget).get("Name"), "event": event,
                 "actions": inserted, "interactions": self.interactions(widget)}
 
-    # Actions that look fine in memory but do NOT survive a save/reload: the action node is silently
-    # dropped by Axure's serialiser, and IxFadeWidgetAction goes further - the reloaded document then
-    # throws InvalidCastException (an action ends up where a widget is expected). Both were caught by
-    # a save→reload audit, not by reading EditorText.
-    UNSAFE_ACTIONS = {
-        "show_hide": "IxFadeWidgetAction: after save+reload the document throws InvalidCastException",
-        "scroll_to": "the action node is dropped on save",
-        "focus": "the action node is dropped on save",
-        "set_image": "the action node is dropped on save",
-        "apply_style": "the action node is dropped on save",
-        "enable_disable": "the action node is dropped on save",
-        "link_frame": "the action node is dropped on save",
-        "panel_order": "the action node is dropped on save",
-        "expand_collapse": "the action node is dropped on save",
-        "set_panel_state": "IxSetPanelStateAction + DIyv leaves a document that cannot be loaded",
-    }
+    # All 17 action kinds are supported. The previously "dropped" ten were lost to one root cause:
+    # their target paths (sJ8l.dJ8s) were built with the (package, guid) ctor, which makes the
+    # WIDGET's Guid the path object's own identity - on reload the stored reference resolves to
+    # the widget itself, the interaction map gains a widget payload, and Axure either drops the
+    # action or fails the whole page load. Targets are now registered through pIyY on a path with
+    # its own identity, and per-target values are set after the action is inserted into the case
+    # (the setters need the case's DataSet context).
+
+    def _safe_path(self, package: int, guid: str) -> int:
+        """A widget-target path (dJ8s) that owns its identity; the widget Guid is only the marker."""
+        return self.b.ctor("sJ8l.dJ8s", [{"$h": package}, None, None, {"$guid": guid}])["$h"]
+
+    def _action_target(self, package: int, action: int, guid: str) -> int:
+        """Register one target widget on a path-info action and return its path."""
+        path = self._safe_path(package, guid)
+        self.b.invoke_on(action, "pIyY", [{"$h": path}])
+        return path
+
+    def _empty_scope(self) -> int:
+        """An empty local-variable scope: the configured value is a plain literal."""
+        return self.b.ctor("VJs7.cJsP", [])["$h"]
+
+    def _apply_deferred(self, action: int, deferred: dict) -> None:
+        """Set per-target values AFTER the action is in the case tree."""
+        kind = deferred["kind"]
+        path = deferred["path"]
+        value = deferred.get("value")
+        if kind == "panel_state":
+            scope = self._empty_scope()
+            self.b.invoke_on(action, "TNzl", [{"$h": path}, deferred.get("state_text"),
+                                              {"$h": scope}])
+            return
+        setter = {
+            "set_opacity": "zNzj", "move": "TNQY", "rotate": "qNAz", "resize": "xSBg",
+        }[kind]
+        scope = self._empty_scope()
+        self.b.invoke_on(action, setter, [{"$h": path}, str(value), {"$h": scope}])
 
     def _build_action(self, package: int, action: str, target_page_id=None, link_type="Current",
-                      wait_ms=None, target_widget=None, fade=None, value=None, mode=None) -> int:
-        """Create one IxAction object and return its handle (nothing is inserted yet)."""
-        reason = self.UNSAFE_ACTIONS.get(str(action).lower())
-        if reason:
-            raise AxureError(
-                f"action {action!r} is disabled: {reason}. Only navigate, close, wait, "
-                "set_opacity, move, rotate and resize survive a save/reload audit.")
+                      wait_ms=None, target_widget=None, fade=None, value=None, mode=None):
+        """Create one IxAction object. Returns (handle, deferred) - deferred value setters must
+        run after the action has been inserted into its case (None when there is nothing to set)."""
         action_lower = action.lower()
         if action_lower in ("navigate", "openlink", "link"):
             if not target_page_id:
                 raise AxureError("navigate action needs target_page_id")
             ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxLinkWindowAction",
                                     [{"$h": package}, {"$guid": target_page_id}, link_type])
-        elif action_lower in ("close", "closecurrent"):
+            return ix_action["$h"], None
+        if action_lower in ("close", "closecurrent"):
             ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxCloseCurrentAction",
                                     [{"$h": package}])
-        elif action_lower == "wait":
+            return ix_action["$h"], None
+        if action_lower == "wait":
             ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxWaitAction",
                                     [{"$h": package}])
             self.b.set_on(ix_action["$h"], "WaitTime", int(wait_ms or 500))
-        elif action_lower in ("set_panel_state", "set_state"):
-            if not target_widget:
-                raise AxureError("set_panel_state needs target_widget (a dynamic panel)")
-            if not value:
-                raise AxureError("set_panel_state needs value (the state name)")
-            panel = self.resolve_widget(package, target_widget)
-            # the only usable ctor takes the animation durations; the state goes in by path
-            durations = self.b.call("makedict", key="System.String", value="System.Double")
-            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxSetPanelStateAction",
-                                    [{"$h": package}, {"$h": durations["$h"]}])
-            path = self.b.ctor("sJ8l.dJ8s",
-                               [{"$h": package}, {"$guid": self.b.invoke_on(panel, "Mtn3")}])
-            self.b.invoke_on(ix_action["$h"], "DIyv", [{"$h": path["$h"]}, str(value)])
-        elif action_lower in ("set_opacity", "move", "rotate", "resize", "set_image", "apply_style"):
-            if not target_widget:
-                raise AxureError(f"action {action_lower} needs target_widget")
-            target = self.resolve_widget(package, target_widget)
-            guid = self.b.invoke_on(target, "Mtn3")
-            if action_lower in ("set_image", "apply_style"):
-                cls = ("Axure.DocumentModel.Interaction.IxSetImageAction"
-                       if action_lower == "set_image"
-                       else "Axure.DocumentModel.Interaction.IxApplyStyleAction")
-                ix_action = self.b.ctor(cls, [{"$h": package}, {"$guid": guid}])
-            else:
-                cls = {
-                    "set_opacity": "Axure.DocumentModel.Interaction.IxSetOpacityAction",
-                    "move": "Axure.DocumentModel.Interaction.IxMoveWidgetAction",
-                    "rotate": "Axure.DocumentModel.Interaction.IxRotateWidgetAction",
-                    "resize": "Axure.DocumentModel.Interaction.IxSetWidgetSizeAction",
-                }[action_lower]
-                if value is None:
-                    raise AxureError(f"action {action_lower} needs value")
-                # these actions keep a Dictionary<string, double> of per-target numbers and are
-                # pointed at a widget through a path object, not through the constructor
-                table = self.b.call("makedict", key="System.String", value="System.Double")
-                ix_action = self.b.ctor(cls, [{"$h": package}, {"$h": table["$h"]}])
-                path = self.b.ctor("sJ8l.dJ8s", [{"$h": package}, {"$guid": guid}])
-                self.b.invoke_on(ix_action["$h"], "DIyv", [{"$h": path["$h"]}, str(value)])
-        elif action_lower in ("enable_disable", "link_frame", "panel_order", "expand_collapse"):
-            if not target_widget:
-                raise AxureError(f"action {action_lower} needs target_widget")
-            target = self.resolve_widget(package, target_widget)
-            guid = self.b.invoke_on(target, "Mtn3")
-            flag = bool(value) if value is not None else True
-            if action_lower == "enable_disable":
-                # (btdo, Guid, EnableActionType) - the 3-arg form is what disambiguates the overload
-                ix_action = self.b.ctor(
-                    "Axure.DocumentModel.Interaction.IxEnableDisableWidgetsAction",
-                    [{"$h": package}, {"$guid": guid}, mode or "Enable"])
-            elif action_lower == "link_frame":
-                ix_action = self.b.ctor(
-                    "Axure.DocumentModel.Interaction.IxLinkFrameAction",
-                    [{"$h": package}, {"$guid": guid}, link_type])
-            elif action_lower == "panel_order":
-                ix_action = self.b.ctor(
-                    "Axure.DocumentModel.Interaction.IxSetPanelOrderAction",
-                    [{"$h": package}, {"$guid": guid}, flag])
-            else:
-                ix_action = self.b.ctor(
-                    "Axure.DocumentModel.Interaction.IxExpandCollapseTreeAction",
-                    [{"$h": package}, {"$guid": guid}, flag])
-        elif action_lower in ("scroll_to", "focus", "show_hide"):
-            if not target_widget:
-                raise AxureError(f"action {action_lower} needs target_widget")
+            return ix_action["$h"], None
+
+        need_target = action_lower != "close"
+        if need_target and not target_widget:
+            raise AxureError(f"action {action_lower} needs target_widget")
+        target_guid = None
+        path = None
+        if target_widget:
             target = self.resolve_widget(package, target_widget)
             target_guid = self.b.invoke_on(target, "Mtn3")
-            if action_lower == "show_hide":
-                # IxFadeWidgetAction is Axure's "Show/Hide" action; FadeActionType = Hide/Show/Toggle
-                ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxFadeWidgetAction",
-                                        [{"$h": package}, {"$guid": target_guid}])
-                if fade:
-                    self.b.set_on(ix_action["$h"], "DefaultFadeAction", fade)
-            else:
-                cls = ("Axure.DocumentModel.Interaction.IxScrollToWidgetAction"
-                       if action_lower == "scroll_to"
-                       else "Axure.DocumentModel.Interaction.IxSetFocusOnWidgetAction")
-                ix_action = self.b.ctor(cls, [{"$h": package}, {"$guid": target_guid}])
+
+        durations = None
+        if action_lower in ("set_panel_state", "show_hide", "set_opacity", "move", "rotate",
+                            "resize"):
+            durations = self.b.call("makedict", key="System.String", value="System.Double")["$h"]
+
+        deferred = None
+        if action_lower in ("set_panel_state", "set_state"):
+            if not value:
+                raise AxureError("set_panel_state needs value (the state name or 1-based index)")
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxSetPanelStateAction",
+                                    [{"$h": package}, {"$h": durations}])
+            path = self._action_target(package, ix_action["$h"], target_guid)
+            deferred = {"kind": "panel_state", "path": path,
+                        "state_text": self._resolve_panel_state(target, value)}
+        elif action_lower == "show_hide":
+            fade_mode = str(fade or "show").title()
+            if fade_mode not in ("Show", "Hide", "Toggle"):
+                raise AxureError(f"fade must be show/hide/toggle, got {fade!r}")
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxFadeWidgetAction",
+                                    [{"$h": package}, fade_mode, {"$h": durations}])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "scroll_to":
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxScrollToWidgetAction",
+                                    [{"$h": package}])
+            self.b.set_on(ix_action["$h"], "TargetWidgetPath",
+                          {"$h": self._safe_path(package, target_guid)})
+        elif action_lower == "focus":
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxSetFocusOnWidgetAction",
+                                    [{"$h": package}])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "set_image":
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxSetImageAction",
+                                    [{"$h": package}])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "apply_style":
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxApplyStyleAction",
+                                    [{"$h": package}])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "enable_disable":
+            enable_mode = str(mode or "Enable").title()
+            if enable_mode not in ("Enable", "Disable", "Toggle"):
+                raise AxureError(f"mode must be enable/disable/toggle, got {mode!r}")
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxEnableDisableWidgetsAction",
+                                    [{"$h": package}, enable_mode])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "link_frame":
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxLinkFrameAction",
+                                    [{"$h": package}, "Frame"])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "panel_order":
+            flag = bool(value) if value is not None else True
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxSetPanelOrderAction",
+                                    [{"$h": package}, flag])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower == "expand_collapse":
+            flag = bool(value) if value is not None else True
+            ix_action = self.b.ctor("Axure.DocumentModel.Interaction.IxExpandCollapseTreeAction",
+                                    [{"$h": package}, flag])
+            self._action_target(package, ix_action["$h"], target_guid)
+        elif action_lower in ("set_opacity", "move", "rotate", "resize"):
+            if value is None:
+                raise AxureError(f"action {action_lower} needs value")
+            cls = {
+                "set_opacity": "Axure.DocumentModel.Interaction.IxSetOpacityAction",
+                "move": "Axure.DocumentModel.Interaction.IxMoveWidgetAction",
+                "rotate": "Axure.DocumentModel.Interaction.IxRotateWidgetAction",
+                "resize": "Axure.DocumentModel.Interaction.IxSetWidgetSizeAction",
+            }[action_lower]
+            ix_action = self.b.ctor(cls, [{"$h": package}, {"$h": durations}])
+            path = self._action_target(package, ix_action["$h"], target_guid)
+            if action_lower == "set_opacity" and isinstance(value, (int, float)) and 0 <= value <= 1:
+                value = int(round(value * 100))  # Windows stores opacity as a percent string
+            deferred = {"kind": action_lower, "path": path, "value": value}
         else:
             raise AxureError(
                 f"unknown action {action!r}; supported: navigate, close, wait, scroll_to, focus, "
                 "show_hide, set_panel_state, set_opacity, move, rotate, resize, set_image, "
                 "apply_style, enable_disable, link_frame, panel_order, expand_collapse")
 
-        return ix_action["$h"]
+        return ix_action["$h"], deferred
+
+    def _resolve_panel_state(self, panel: int, value) -> str:
+        """Resolve a state name or 1-based index to the literal Axure stores (1-based index)."""
+        try:
+            listing = self.b.get_on(panel, "PanelStateNames")
+            names = [n for n in (self.b.iter(listing["$h"], limit=200) or [])]
+        except BridgeError:
+            names = []
+        if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+            index = int(value) - 1
+            if not 0 <= index < max(len(names), 1):
+                raise AxureError(f"panel has no state #{value}")
+        else:
+            try:
+                index = names.index(str(value))
+            except ValueError:
+                raise AxureError(f"panel has no state {value!r}; states: {names}") from None
+        return str(index + 1)
 
     def clear_interactions(self, widget: int) -> None:
         ix = self._ix_map(widget)

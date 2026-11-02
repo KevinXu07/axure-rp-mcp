@@ -1124,3 +1124,63 @@ length = image.Length           // 与字节数一致
 
 注意 QtaH 的 taT() 返回的是**格式串**（"png"），不是哈希；SHA-256 在 Python 侧算。
 无资产 ImageBox 的 dtap() 会抛 NRE，按空图片处理（与 Mac 侧 bug #22 同款）。
+
+## 25. 交互动作全量开放（推翻 18.4 的"只能 7 个"）
+
+### 25.1 真正的根因：目标路径对象的身份冲突
+
+18.4 的存盘重载审计把 10 个动作判了死刑（"存盘被静默丢弃"/fade 让文件打不开）。
+合并 macOS 适配层后重查，根因与控件备注（21.8）完全同源——**把别人的 Guid 当成了自己的身份**：
+
+- 动作的目标路径 sJ8l.dJ8s 用双参构造 
+ew dJ8s(package, widgetGuid) 时，
+  ase(btdo, Guid) 把**控件的 Guid** 设成路径对象自己的持久化身份。
+  存盘后动作引用这条路径；重载时按身份解析，拿到的是**同 Guid 的控件本体**——
+  交互图（MJuB.gJuG，存储键 interactionmap）里出现控件载荷，
+  轻则动作节点被吞（"静默丢弃"的真相），重则整页加载抛
+  InvalidCastException: Unable to cast TextBox to sJ8l.dJ8s（fade 的真相）。
+- 正确构造（Axure 自己在 IxAction.ThisObject、IxCase、IxLinkFrameAction 里都这么写）：
+  
+ew dJ8s(package, null, null, widget.Mtn3()) —— 四参构造走 ase(btdo) 自动身份，
+  控件 Guid 只是路径标记（DJfk/xJfE）。
+
+### 25.2 目标注册与赋值的正确入口
+
+- DIyv(path, value) 是**描述格式化器**，开头就判 !dIym(P_0) 直接返回，从不注册目标。
+  旧配方里它一直是空转，能活的 4 个数值动作其实**目标映射是空的**（存活但无目标）。
+- 注册目标用 **pIyY(path)**（IxPathInfoMapAction 覆写）：不存在则 xNAI(path)
+  → IyQ(path) 工厂建出带默认值的信息对象并存进 NAk。
+- 逐目标的值必须在动作**插入用例树之后**再设（zNzj/TNQY/qNAz/xSBg/TNzl
+  都要读用例的 DataSet 上下文，插入前调会 NullReferenceException）：
+
+| 动作 | 构造 | 设值 |
+| --- | --- | --- |
+| show_hide | IxFadeWidgetAction(pkg, FadeActionType, durations) | 模式在信息对象里持久化 |
+| set_opacity | (pkg, durations) + pIyY | zNzj(path, "40", scope)（百分数字符串） |
+| move | 同上 | TNQY(path, value, scope)（单值双轴） |
+| rotate | 同上 | qNAz(path, value, scope) |
+| resize | 同上 | xSBg(path, value, scope) |
+| set_panel_state | (pkg, durations) + pIyY | TNzl(path, "2", scope)（**1 基状态序号**字面量） |
+| enable_disable | (pkg, EnableActionType) | 模式在信息对象里持久化 |
+| panel_order / expand_collapse | (pkg, bool) | bool 在信息对象里持久化 |
+| scroll_to | (pkg) | 直接写 TargetWidgetPath 属性 |
+| focus / set_image / apply_style | (pkg) | pIyY 注册目标即可（图/样式的逐态赋值待后续） |
+| link_frame | (pkg, LinkType.Frame) | pIyY 注册目标 |
+
+scope 是 VJs7.cJsP（局部变量作用域集合），字面量值传空集合。
+注意 IyZ(path, relativeTo) 是**移动/重排**路径的入口，不是注册——误用会拿到空映射。
+
+### 25.3 验证
+
+- 一次性文件：20 个动作（17 类，show/hide/toggle 与 enable/disable 各算多例）
+  挂在同一个 OnClick 的一个用例下，保存 → 杀进程 → 重开 → 20/20 全部存活，
+  FadeActionType=Show/Hide/Toggle、EnableAction=Enable/Disable、
+  StateValueText="2"、OpacityText="40"、BringToFront/Expand 逐项保真。
+- 全量回归（	ools/regression_ascii.py）：B:ix_targets 断言
+  fade=Hide、enable=Disable、state=2、opacity=40 跨重启成立。Phase A 50/50，Phase B 17/17。
+
+### 25.4 Redo 复活
+
+10.3 记录的"Redo 卡死进程"不再成立：旧观察来自 worker 线程直跑时代；
+所有调用改走 Control.Invoke 封送（24.1）后，Redo.RHhc() 0.04s 返回，
+撤销栈行为正确（加控件 → 撤销 → 重做，计数 9→10→9→10）。xure_redo 已作为工具开放。

@@ -31,13 +31,14 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 ## 平台支持
 
-Windows 注册 39 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
+Windows 注册 40 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
 .NET 8.0.11** 上通过真实 stdio MCP 调用、原生画布与 Preview、保存后退出并用新 PID 重启读回验证：
 支持 **35 个工具、16 类控件创建**。页面/文件夹、列表、图片替换、表格、富文本、动态面板状态、
 页面与控件备注、分组、层级、7 类交互动作均可持久化。
 
 Mac 暂不宣称 `axure_render_page` 与 `axure_undo`（也不提供 Windows 新增的
-`axure_copy_widget` / `axure_get_widget_image`）；`connector`、`textlink` 创建会被拒绝。
+`axure_copy_widget` / `axure_get_widget_image` / `axure_redo`，以及 Windows 已扩展的其余
+10 类交互动作）；`connector`、`textlink` 创建会被拒绝。
 其他 Mac 版本会在访问文档模型前明确报版本不支持，Intel Mac 尚未实测。
 
 安装、验证脚本、逐项限制和修复记录见 **[docs/MACOS.md](docs/MACOS.md)**。下方完整能力矩阵是上游 Windows 的验证结果，不代表 Mac 的全部能力。
@@ -56,7 +57,7 @@ Mac 暂不宣称 `axure_render_page` 与 `axure_undo`（也不提供 Windows 新
 | `axure_copy_widget` | **复制控件**（Windows）：Axure 自己的剪贴板管线，深拷贝文本/样式/几何/交互，落点可指定，自动去重命名，可 Ctrl+Z |
 | `axure_delete_widget` | 删除控件 |
 | `axure_style_widget` / `axure_get_widget_style` | **样式**：填充色、边框色/宽度、圆角、透明度、字体/字号/加粗/斜体/下划线、水平与垂直对齐、行距、字距、内边距、旋转 |
-| `axure_add_interaction` / `axure_get_interactions` | **交互**：事件 → 用例 → 动作。只开放 **7 个动作**：navigate / close / wait / set_opacity / move / rotate / resize；Mac 每批最多 100 个动作并支持多 case |
+| `axure_add_interaction` / `axure_get_interactions` | **交互**：事件 → 用例 → 动作。**17 个动作全部可用**（navigate / close / wait / set_opacity / move / rotate / resize / show_hide / scroll_to / focus / set_image / apply_style / enable_disable / link_frame / panel_order / expand_collapse / set_panel_state），读回带目标控件与值；Mac 每批最多 100 个动作并支持多 case，暂只开放 7 类 |
 | `axure_align` / `axure_distribute` | **对齐与分布**：左/水平居中/右/上/垂直居中/下，沿水平或垂直等距铺开（可指定间距） |
 | `axure_same_size` | **等宽等高**：以第一个控件为基准统一宽/高/两者 |
 | `axure_group` / `axure_ungroup` | **分组/解散**：多个控件合成 Group；Mac 保持成员全局对象身份，嵌套成员仍可按持久 GUID 编辑 |
@@ -189,7 +190,7 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 | 页面：新建 / 删除 / 重命名 / 移动 | ✅ | 文件夹同样支持 |
 | 控件：新建 / 改文字与几何 / 删除 | 分平台 | Windows 新建 18 类且可 Ctrl+Z；Mac 新建 16 类，直接模型插入不产生撤销项 |
 | 样式：填充 / 边框 / 圆角 / 透明度 / 字体字号 / 粗斜体 / 对齐 / 内边距 / 行距字距 | ✅ | 读写都行 |
-| 交互：事件 + 用例 + 动作 | ✅ 7 个动作 | navigate / close / wait / set_opacity / move / rotate / resize |
+| 交互：事件 + 用例 + 动作 | ✅ **17 个动作** | navigate / close / wait / set_opacity / move / rotate / resize / show_hide / scroll_to / focus / set_image / apply_style / enable_disable / link_frame / panel_order / expand_collapse / set_panel_state，全部过「保存→重启」审计，读回带目标与值 |
 | 分组 / 解散 | ✅ | 解散用「复制回页面再删 Layer」实现 |
 | 对齐 / 分布 / 等宽等高 | ✅ | 纯几何 |
 | 页面备注 | ✅ | 与控件备注可同页共存，互不影响 |
@@ -201,11 +202,9 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 | 富文本 / 多段落 | ✅ | shape 走 RichTextPanel，纯文本控件走换行 |
 | 列表项（下拉/列表框） | ✅ | 整表替换 `Options` |
 | 动态面板状态：读 / 新增 / 改名 | ✅ | 新增靠复制已有状态 |
-| 撤销 | 分平台 | Windows 等价 Ctrl+Z；Mac 直接模型插入不产生撤销项，因此不对外提供 |
+| 撤销 / 重做 | 分平台 | **Windows ✅ 撤销+重做（Redo 为新增）**；Mac 直接模型插入不产生撤销项，两者都不提供 |
 | 另存为 / 渲染导出 PNG | 分平台 | 另存为 = 落盘后复制文件；PNG 工具仅 Windows，Mac 原生 Preview 可人工验证 |
 | 母版 / 组件 | ❌ | 手写 `mJsm` 载荷过不了序列化校验，且失败会污染内存文档 |
-| Redo | ❌ | 会阻塞 UI 线程，桥失联 |
-| 其余 8 个交互动作 | ❌ | 存盘后动作节点被 Axure 静默丢弃 |
 
 ## 关键限制
 
@@ -228,10 +227,14 @@ python tools\demo_v2.py                            # 从零生成一个演示原
   注解消失、注解树里多出一个控件节点）。现在写入前先 `LSmd()` 克隆富文本、只用单参构造，
   页面备注与控件备注可同页共存且都能过「保存 → 重启 → 读回」。历史脏文件由
   `widget_notes` 读取时自动修复（剔除注解树里的非注解节点）。
-- **交互动作只开放 7 个**：另有 10 个（show_hide / scroll_to / focus / set_image / apply_style /
-  enable_disable / link_frame / panel_order / expand_collapse / set_panel_state）在存盘重载审计里
-  要么被 Axure 静默丢弃、要么让文件打不开，已在代码里禁用（`ops.UNSAFE_ACTIONS`）。
-  底层细节见 `docs/REVERSE-ENGINEERING.md` 第 14、18.4 节。
+- **交互动作（已全量开放）**：以前只敢开放 7 个，另外 10 个"被 Axure 静默丢弃"。
+  真正的根因与控件备注同源：**目标路径对象 `sJ8l.dJ8s` 用 `(package, guid)` 双参构造时，
+  控件的 Guid 成了路径对象自己的身份**，存盘后的引用在重载时解析到控件本体，动作节点被吞、
+  交互图被污染（fade 动作还会让整页加载抛 InvalidCastException）。另外 `DIyv` 只是描述
+  格式化器，根本不注册目标；正确的目标注册是 `pIyY(path)`（路径用自带身份的 4 参构造），
+  逐目标的值要在动作插入用例树之后设置（`zNzj`/`TNQY`/`qNAz`/`xSBg`/`TNzl`，它们依赖
+  用例的 DataSet 上下文）。现在 17 个动作全部可用，读回带目标控件与值。
+  Redo 也已随 UI 封送修复恢复可用。详见 `docs/REVERSE-ENGINEERING.md` 第 25 节。
 - **动态面板状态**：读、增、改名都可用，但**新增只能靠"复制已有状态"**——
   `panel.eNaz(...)` 那条路会让文档无法序列化，已弃用。
 - 已知渲染问题：`TextArea` 在设置「加粗 + 自定义字体 + 自定义填充」后，

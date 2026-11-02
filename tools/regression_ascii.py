@@ -180,6 +180,20 @@ def main():
         ("interaction", "axure_add_interaction", {"name": "btn", "event": "OnClick",
                                                   "action": "wait", "wait_ms": 250,
                                                   "page_name": PAGE_A}),
+        ("ix_hide", "axure_add_interaction", {"name": "btn", "event": "OnMouseOver",
+                                              "action": "show_hide", "target_widget": "txt",
+                                              "fade": "Hide", "page_name": PAGE_A}),
+        ("ix_disable", "axure_add_interaction", {"name": "btn", "event": "OnMouseOver",
+                                                 "action": "enable_disable",
+                                                 "target_widget": "btn2", "mode": "Disable",
+                                                 "page_name": PAGE_A}),
+        ("ix_panel_state", "axure_add_interaction", {"name": "btn", "event": "OnMouseOver",
+                                                     "action": "set_panel_state",
+                                                     "target_widget": "pnl", "value": "stateTwo",
+                                                     "page_name": PAGE_A}),
+        ("ix_opacity", "axure_add_interaction", {"name": "btn", "event": "OnMouseOver",
+                                                 "action": "set_opacity", "target_widget": "btn3",
+                                                 "value": 0.4, "page_name": PAGE_A}),
         ("get_interactions", "axure_get_interactions", {"name": "btn", "page_name": PAGE_A}),
         ("update_widgetr", "axure_update_widget", {"name": "txt", "text": "Title updated",
                                                    "page_name": PAGE_A}),
@@ -250,6 +264,16 @@ def main():
             for c in ev["cases"] for a in c["actions"]]
     record("B:interaction", any(a and "Wait" in a for a in acts), str(acts))
 
+    targets = [t for ev in got["interactions"].get("interactions", [])
+               for c in ev["cases"] for a in c["actions"] for t in (a.get("targets") or [])]
+    have = {t.get("FadeActionType") for t in targets} | {t.get("EnableAction") for t in targets}
+    states_txt = {t.get("StateValueText") for t in targets}
+    opacities = {t.get("OpacityText") for t in targets}
+    record("B:ix_targets", "Hide" in have and "Disable" in have and "2" in states_txt
+           and "40" in opacities,
+           f"fade={sorted(x for x in have if x)} state={sorted(x for x in states_txt if x)} "
+           f"opacity={sorted(x for x in opacities if x)}")
+
     notes = list(got["page_notes"].get("notes", {}).values())
     record("B:page_note", NOTE in notes, str(notes[:1]))
     wn = got["widget_notes"].get("notes", [])
@@ -280,7 +304,7 @@ def main():
     record("B:save_as", os.path.exists(COPY), "copy exists")
 
     order = ("B:page_tree", "B:move_page", "B:widgets", "B:update_widget", "B:style",
-             "B:interaction", "B:page_note", "B:widget_note", "B:widget_note_a",
+             "B:interaction", "B:ix_targets", "B:page_note", "B:widget_note", "B:widget_note_a",
              "B:copy_widget", "B:image_bytes", "B:panel_states", "B:image",
              "B:table", "B:render", "B:save_as")
     passed = 0
