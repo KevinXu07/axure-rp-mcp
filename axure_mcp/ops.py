@@ -19,6 +19,7 @@ Axure.commit); Document.Save() alone writes an unchanged document.
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import shutil
 import time
@@ -847,8 +848,11 @@ class Axure:
 
         rich = self.b.invoke_on(handle, "gJiI", [{"$guid": target["id"]}])
         rich_handle = rich["$h"]
-        self.b.set_on(rich_handle, "Text", str(text))
-        self.b.invoke_on(handle, "XJi5", [target["name"], {"$h": rich_handle}])
+        # gJiI hands out Axure's shared static default for an unset field; clone so writing here
+        # never leaks into other annotations (the same reason set_widget_note clones).
+        fresh = self.b.invoke_on(rich_handle, "LSmd")["$h"]
+        self.b.set_on(fresh, "Text", str(text))
+        self.b.invoke_on(handle, "XJi5", [target["name"], {"$h": fresh}])
         return {"field": target["name"], "text": str(text),
                 "empty": self.b.get_on(handle, "IsEmpty")}
 
@@ -861,16 +865,16 @@ class Axure:
         vJi6(guid) to bind the owner, JJik("DiagramObject") to set its kind, and the *widget* field
         set (model.DiagramObjectAnnotationFieldSet.K5HC()) for the property ids - using the page
         field set silently returns the page note instead.
+
+        Two details make notes persist and keep them independent:
+        - the single-argument constructor must be used. UJiJ(package, guid) gives the annotation the
+          widget's Guid as its own object identity, so on reload the stored reference resolves to the
+          widget itself - the annotation vanishes and the tree gains a widget payload node.
+        - gJiI returns Axure's SHARED static default rich text for an unset field. Cloning it
+          (LSmd) before writing is what keeps page and widget notes from overwriting each other and
+          is required for the value to survive save/reload.
         """
         widget = self.resolve_widget(package, name, handle)
-        # tJiN.UJiJ instances share storage: once a page note exists, a widget note silently
-        # overwrites it after save/reload. Refuse instead of losing data.
-        existing_page = self.page_notes(package)
-        if any(v for v in existing_page.values()):
-            raise AxureError(
-                "this page already has a page note; Axure shares annotation storage between page and "
-                "widget notes, so writing both ends up overwriting the page note after a reload. "
-                "Use one kind of note per page (clear the page note first if you need widget notes).")
         guid = self.b.invoke_on(widget, "Mtn3")
         entries = self._widget_note_fields()
         if not entries:
@@ -880,17 +884,16 @@ class Axure:
             raise AxureError(f"unknown widget note field {field!r}; available: "
                              f"{[e['name'] for e in entries]}")
 
-        # The (package, guid) ctor keeps page notes safe but the note does not survive a reload;
-        # the (package) ctor persists but shares storage with the page annotation. Persistence wins,
-        # and the guard above stops it from being used on a page that already has a page note.
         annotation = self.b.ctor("tJiN.UJiJ", [{"$h": package}])["$h"]
         self.b.invoke_on(annotation, "vJi6", [{"$guid": guid}])
         self.b.invoke_on(annotation, "JJik", ["DiagramObject"])
         rich = self.b.invoke_on(annotation, "gJiI", [{"$guid": target["id"]}])["$h"]
-        self.b.set_on(rich, "Text", str(text))
-        self.b.invoke_on(annotation, "XJi5", [target["name"], {"$h": rich}])
+        fresh = self.b.invoke_on(rich, "LSmd")["$h"]
+        self.b.set_on(fresh, "Text", str(text))
+        self.b.invoke_on(annotation, "XJi5", [target["name"], {"$h": fresh}])
 
-        collection = self.b.invoke_on(self.diagram(package), "zIuI")["$h"]
+        diagram = self.diagram(package)
+        collection = self.b.invoke_on(diagram, "zIuI")["$h"]
         existing = self._widget_annotation(collection, guid)
         if existing:
             self.b.invoke_on(collection, "Remove", [{"$h": existing}])
@@ -924,16 +927,67 @@ class Axure:
                 return handle
         return None
 
+    def _repair_annotation_tree(self, collection: int) -> int:
+        """Drop tree nodes whose payload is not an annotation and return the collection handle.
+
+        Historical writes with UJiJ(package, guid) leave a widget as a tree payload; the tree walk
+        in QJPN then fails its UJiJ cast and every read (and later save) blows up. Removing those
+        nodes makes the document readable again.
+        """
+        tree = self.b.get_on(collection, "Tree")
+        if not isinstance(tree, dict) or "$h" not in tree:
+            return collection
+        children = self.b.get_on(tree["$h"], "Children")
+        if not isinstance(children, dict) or "$h" not in children:
+            return collection
+        removed = 0
+        for item in (self.b.iter(children["$h"], limit=500) or []):
+            node = item.get("$h") if isinstance(item, dict) else None
+            if not node:
+                continue
+            try:
+                payload = self.b.invoke_on(collection, "xNFB", [{"$h": node}])
+            except BridgeError:
+                continue
+            if isinstance(payload, dict) and payload.get("$h"):
+                identity = self.b.identity(payload["$h"])
+                if identity.get("type") == "tJiN.UJiJ":
+                    continue
+            try:
+                self.b.invoke_on(collection, "UIl1", [{"$h": node}])
+                removed += 1
+            except BridgeError:
+                pass
+        if removed:
+            self.flush_paint()
+        return collection
+
     def widget_notes(self, package: int) -> list[dict]:
-        collection = self.b.invoke_on(self.diagram(package), "zIuI")["$h"]
-        seq = self.b.invoke_on(collection, "QJPN")
+        diagram = self.diagram(package)
+        collection = self.b.invoke_on(diagram, "zIuI")["$h"]
+        seq = None
+        try:
+            seq = self.b.invoke_on(collection, "QJPN")["$h"]
+            items = list(self.b.iter(seq, limit=500) or [])
+        except BridgeError:
+            # a non-annotation payload node breaks the UJiJ cast inside Axure; repair and retry
+            collection = self._repair_annotation_tree(collection)
+            seq = self.b.invoke_on(collection, "QJPN")["$h"]
+            items = list(self.b.iter(seq, limit=500) or [])
         out = []
-        for item in (self.b.iter(seq["$h"], limit=500) if isinstance(seq, dict) else []) or []:
+        names = {}
+        for handle in self._collect_handles(self.objects(package), deep=True):
+            try:
+                names[self.b.invoke_on(handle, "Mtn3")] = self.b.get_on(handle, "Name")
+            except BridgeError:
+                continue
+        for item in items:
             handle = item.get("$h") if isinstance(item, dict) else None
             if not handle:
                 continue
             owner = self.b.get_on(handle, "OwnerId")
-            entry = {"owner": owner, "kind": self.b.invoke_on(handle, "DJiE"), "fields": {}}
+            entry = {"owner": owner, "widget": names.get(owner),
+                     "kind": self.b.invoke_on(handle, "DJiE"), "fields": {}}
             for field in self._widget_note_fields():
                 try:
                     entry["fields"][field["name"]] = self.b.invoke_on(handle, "bJi1",
@@ -1222,6 +1276,84 @@ class Axure:
                 f"the ImageBox kept its previous image ({length} bytes); Axure only accepts the first "
                 "Image assignment - delete and re-create the widget, or use a fresh ImageBox")
         return {"widget": self.widget_info(widget).get("Name"), "bytes": len(image_bytes)}
+
+    def widget_image(self, package: int, name: str = "", handle: int | None = None,
+                     include_data: bool = False) -> dict:
+        """Read the image embedded in an ImageBox.
+
+        Returns the stored byte count and SHA-256 so callers can verify what set_image retained;
+        include_data adds the raw bytes as base64. The image stream is read through QtaH.dtap()
+        (a MemoryStream for embedded assets), so no re-render is involved.
+        """
+        widget = self.resolve_widget(package, name, handle)
+        image = self.b.get_on(widget, "Image")
+        if not isinstance(image, dict) or "$h" not in image:
+            raise AxureError(f"{self.widget_info(widget).get('Name') or 'widget'} carries no "
+                             "embedded image; it is not an image widget")
+        stored = image["$h"]
+        length = (self.b.dump(stored, depth=1, limit=6) or {}).get("Length")
+        data = b""
+        try:
+            stream = self.b.invoke_on(stored, "dtap")["$h"]
+            data = base64.b64decode(self.b.invoke_on(stream, "ToArray"))
+        except BridgeError as exc:
+            if length:
+                raise AxureError(f"cannot read the embedded image stream: {exc}") from exc
+            # an ImageBox created without an asset has no backing stream; report it as empty
+        out = {"widget": self.widget_info(widget).get("Name"), "bytes": len(data),
+               "sha256": hashlib.sha256(data).hexdigest() if data else None}
+        if include_data:
+            out["base64"] = base64.b64encode(data).decode("ascii")
+        return out
+
+    # ---------- copy ----------
+
+    def copy_widget(self, package: int, name: str = "", handle: int | None = None,
+                    x: float | None = None, y: float | None = None,
+                    new_name: str | None = None) -> dict:
+        """Duplicate one widget through Axure's own clipboard pipeline (EFqs.djol -> Paste).
+
+        The copy is a deep copy: text, style, geometry and interactions all carry over. It is
+        placed with its top-left corner at (x, y), by default 24px right and below the source,
+        and it goes through the editor pipeline, so Ctrl+Z / axure_undo removes it. The copy is
+        renamed to new_name, or "<source>_copy" plus a numeric suffix when that name is taken.
+        """
+        source = self.resolve_widget(package, name, handle)
+        diagram = self.diagram(package)
+        editor = self.b.get_on(self.client, "Editor")["$h"]
+        helper = self.b.get_on(editor, "LFyv")["$h"]
+        before = set()
+        for widget in self.widgets(package, deep=False):
+            try:
+                before.add(self.b.identity(widget["handle"])["id"])
+            except BridgeError:
+                continue
+
+        sx = float(self.b.get_on(source, "X"))
+        sy = float(self.b.get_on(source, "Y"))
+        px = sx + 24.0 if x is None else float(x)
+        py = sy + 24.0 if y is None else float(y)
+        copied = self.b.invoke_on(helper, "djol", [{"$h": self.client}, {"$h": diagram},
+                                                   {"$arr": [{"$h": source}]}, True, False, False])
+        if not copied:
+            raise AxureError("Axure refused to copy this widget to its clipboard")
+        point = self.b.ctor("m5wr.f5wV", [px, py])
+        pasted = self.b.invoke_on(helper, "Paste", [{"$h": point["$h"]}])
+        if not pasted:
+            raise AxureError("Axure refused to paste the copied widget")
+
+        fresh = [w for w in self.widgets(package, deep=False)
+                 if self.b.identity(w["handle"])["id"] not in before]
+        if len(fresh) != 1:
+            raise AxureError(f"expected one pasted widget, found {len(fresh)}")
+        copy = fresh[0]["handle"]
+        base = new_name or f"{fresh[0].get('Name') or 'widget'}_copy"
+        candidate, suffix = base, 2
+        while self.find_widget(package, candidate) is not None:
+            candidate = f"{base}{suffix}"
+            suffix += 1
+        self.b.set_on(copy, "Name", candidate)
+        return self.widget_info(copy)
 
     # ---------- align / distribute ----------
 

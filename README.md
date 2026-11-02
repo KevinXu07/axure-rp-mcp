@@ -31,12 +31,13 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 ## 平台支持
 
-Windows 注册 37 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
+Windows 注册 39 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
 .NET 8.0.11** 上通过真实 stdio MCP 调用、原生画布与 Preview、保存后退出并用新 PID 重启读回验证：
 支持 **35 个工具、16 类控件创建**。页面/文件夹、列表、图片替换、表格、富文本、动态面板状态、
 页面与控件备注、分组、层级、7 类交互动作均可持久化。
 
-Mac 暂不宣称 `axure_render_page` 与 `axure_undo`；`connector`、`textlink` 创建会被拒绝。
+Mac 暂不宣称 `axure_render_page` 与 `axure_undo`（也不提供 Windows 新增的
+`axure_copy_widget` / `axure_get_widget_image`）；`connector`、`textlink` 创建会被拒绝。
 其他 Mac 版本会在访问文档模型前明确报版本不支持，Intel Mac 尚未实测。
 
 安装、验证脚本、逐项限制和修复记录见 **[docs/MACOS.md](docs/MACOS.md)**。下方完整能力矩阵是上游 Windows 的验证结果，不代表 Mac 的全部能力。
@@ -52,6 +53,7 @@ Mac 暂不宣称 `axure_render_page` 与 `axure_undo`；`connector`、`textlink`
 | `axure_get_page` | 页面上控件的几何、文字、可见性；Mac 可用 `deep=true` 读取分组成员及列表/图片/表格/面板内容 |
 | `axure_add_widget` | 新建控件（button / textbox / textarea / checkbox / radiobutton / droplist / listbox / dynamicpanel / image / inlineframe / table / repeater / connector / group / hotspot / snapshot / textlink / shape）；Mac 不支持 connector / textlink |
 | `axure_update_widget` | 改文字 / 位置 / 尺寸 / 可见性 / 改名 |
+| `axure_copy_widget` | **复制控件**（Windows）：Axure 自己的剪贴板管线，深拷贝文本/样式/几何/交互，落点可指定，自动去重命名，可 Ctrl+Z |
 | `axure_delete_widget` | 删除控件 |
 | `axure_style_widget` / `axure_get_widget_style` | **样式**：填充色、边框色/宽度、圆角、透明度、字体/字号/加粗/斜体/下划线、水平与垂直对齐、行距、字距、内边距、旋转 |
 | `axure_add_interaction` / `axure_get_interactions` | **交互**：事件 → 用例 → 动作。只开放 **7 个动作**：navigate / close / wait / set_opacity / move / rotate / resize；Mac 每批最多 100 个动作并支持多 case |
@@ -68,8 +70,9 @@ Mac 暂不宣称 `axure_render_page` 与 `axure_undo`；`connector`、`textlink`
 | `axure_panel_states` / `axure_add_panel_state` | **动态面板状态**：读状态列表 / 复制新增状态（可改名） |
 | `axure_set_table` | **表格**：设置行列与单元格文字（二维数组，行优先）；Mac 支持行列尺寸，最多 10,000 个单元格 |
 | `axure_set_image` | **图片**：把 base64 图片嵌进 ImageBox；Mac 可原位换图并通过 SHA-256 校验，Windows 同一控件只接受首次赋值 |
+| `axure_get_widget_image` | **图片读回**（Windows）：读 ImageBox 内嵌图片的字节数与 SHA-256，`include_data=true` 附 base64 原始字节，用于校验 set_image 的落盘结果 |
 | `axure_set_page_note` / `axure_get_page_notes` | **页面备注**（Notes 面板的字段，如 Page overview） |
-| `axure_set_widget_note` / `axure_get_widget_notes` | **控件备注**（按 OwnerId 绑定控件）；Mac 可与页面备注同时存在，并随保存/重启保留 |
+| `axure_set_widget_note` / `axure_get_widget_notes` | **控件备注**（按 OwnerId 绑定控件，读回带控件名）；Windows 与 Mac 都可与页面备注同页共存，并随保存/重启保留 |
 | `axure_save_as` | 另存为（先落盘再复制文件；Axure 自带的另存为会弹模态框把桥卡死） |
 
 > 想看这些工具串起来能做什么：**[docs/DEMO.md](docs/DEMO.md)** —— 从零搭一个多页原型的完整流程
@@ -189,9 +192,11 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 | 交互：事件 + 用例 + 动作 | ✅ 7 个动作 | navigate / close / wait / set_opacity / move / rotate / resize |
 | 分组 / 解散 | ✅ | 解散用「复制回页面再删 Layer」实现 |
 | 对齐 / 分布 / 等宽等高 | ✅ | 纯几何 |
-| 页面备注 | ✅ | Windows 与控件备注互斥；Mac 可与控件备注同时使用并持久化 |
-| 控件备注 | 分平台 | Windows 当前存盘重载不可靠；**Mac 已验证多个控件备注与页面备注并存** |
+| 页面备注 | ✅ | 与控件备注可同页共存，互不影响 |
+| 控件备注 | 分平台 | **Windows ✅（新增）**：与页面备注共存、保存重启后保留；Mac ✅ 已验证多个控件备注与页面备注并存 |
+| 控件复制 | 分平台 | **Windows ✅（新增）**：走 Axure 自己的剪贴板管线，文本/样式/几何/交互全带过去，可 Ctrl+Z；Mac 暂不提供 |
 | 图片（ImageBox 内嵌 PNG） | ✅ | Windows 同一控件只接受首次赋值；**Mac 支持同尺寸原位换图、字节读回和 SHA-256** |
+| 图片读回 | 分平台 | **Windows ✅（新增）**：`axure_get_widget_image` 读回字节数与 SHA-256（可选 base64）；Mac 由 `axure_get_page` 返回内容读回 |
 | 表格 | ✅ | 行列 + 单元格文字 |
 | 富文本 / 多段落 | ✅ | shape 走 RichTextPanel，纯文本控件走换行 |
 | 列表项（下拉/列表框） | ✅ | 整表替换 `Options` |
@@ -217,8 +222,12 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 - **分组内控件可编辑**：按名字查找会自动下潜进 Group；`widgets(deep=True)` 才会列出成员。
 - **层级（z-order）只做了 front/back**：`XJ48.mJ4n` 没有可靠的"移到指定下标"原语，
   `kJnm`/`rJ4l` 会复制条目，`Remove`+`Add` 会丢掉控件内部子对象（TextArea 的文字就是这么丢的）。
-- **备注注解**：页面备注与控件备注在同一页同时使用时，存盘重启后会互相串（已在文档记录）。
-  建议一个页面只用一种备注。
+- **备注注解（已修复）**：以前页面备注与控件备注同页会互相串、控件备注存盘重启后丢失。
+  根因有两个：`UJiJ.gJiI` 对未赋值字段返回 **Axure 的静态共享富文本对象**（改它就是改全局默认值），
+  以及 `UJiJ(package, guid)` 双参构造会把注解的对象身份设成控件的 Guid（重载时解析到控件本体，
+  注解消失、注解树里多出一个控件节点）。现在写入前先 `LSmd()` 克隆富文本、只用单参构造，
+  页面备注与控件备注可同页共存且都能过「保存 → 重启 → 读回」。历史脏文件由
+  `widget_notes` 读取时自动修复（剔除注解树里的非注解节点）。
 - **交互动作只开放 7 个**：另有 10 个（show_hide / scroll_to / focus / set_image / apply_style /
   enable_disable / link_frame / panel_order / expand_collapse / set_panel_state）在存盘重载审计里
   要么被 Axure 静默丢弃、要么让文件打不开，已在代码里禁用（`ops.UNSAFE_ACTIONS`）。

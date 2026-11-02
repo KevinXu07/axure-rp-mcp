@@ -15,6 +15,8 @@ internal static class UiThread
     private static object _appMarshaller;
     private static MethodInfo _appMarshal;
     private static PropertyInfo _invokeRequired;
+    private static Type _marshalDelegateType;
+    private static bool _marshalSyncFlag;
     private static readonly object Gate = new();
 
     public static T Run<T>(Func<T> func)
@@ -62,7 +64,21 @@ internal static class UiThread
                     if (Interlocked.CompareExchange(ref state, 1, 0) != 0) return;
                     try { Body(); } finally { done.TrySetResult(true); }
                 };
-                _appMarshal.Invoke(_appMarshaller, new object[] { action });
+                // Axure's own marshaller (s95L.M3GD) takes a custom parameterless delegate
+                // (pbCu.xbCw), not Action, plus an optional bool (true = blocking Invoke). Build the
+                // delegate against a per-call target so the state guard above stays effective.
+                object[] args;
+                if (_marshalDelegateType != null)
+                {
+                    var slot = new MarshalSlot(action);
+                    var dlg = Delegate.CreateDelegate(_marshalDelegateType, slot, nameof(MarshalSlot.Run));
+                    args = _marshalSyncFlag ? new object[] { dlg, true } : new object[] { dlg };
+                }
+                else
+                {
+                    args = new object[] { action };
+                }
+                _appMarshal.Invoke(_appMarshaller, args);
                 // Completion is independent of the result: void/null is a successful call too.
                 if (!done.Task.Wait(TimeSpan.FromSeconds(15)))
                 {
@@ -147,17 +163,26 @@ internal static class UiThread
             _appMarshaller = getter?.Invoke(null, null);
             if (_appMarshaller == null) return;
 
-            _appMarshal = _appMarshaller.GetType()
+            // s95L.M3GD(xbCw run, bool sync = true): xbCw is Axure's own parameterless void
+            // delegate, and the bool selects Control.Invoke (true) vs BeginInvoke (false).
+            var m = _appMarshaller.GetType()
                 .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .Where(m => m.Name == "M3GD")
-                .Where(m =>
-                {
-                    var ps = m.GetParameters();
-                    return ps.Length == 1 && typeof(Delegate).IsAssignableFrom(ps[0].ParameterType);
-                })
-                .OrderBy(m => m.GetParameters()[0].ParameterType == typeof(Action) ? 0 : 1)
+                .Where(x => x.Name == "M3GD")
+                .OrderBy(x => x.GetParameters().Length)
                 .FirstOrDefault();
+            var ps = m?.GetParameters();
+            if (ps == null || ps.Length == 0 || !typeof(Delegate).IsAssignableFrom(ps[0].ParameterType)) return;
+            _marshalDelegateType = ps[0].ParameterType;
+            _marshalSyncFlag = ps.Length > 1 && ps[1].ParameterType == typeof(bool);
+            _appMarshal = m;
         }
         catch (Exception ex) { Bridge.Log("app marshaller probe: " + ex.Message); }
+    }
+
+    private sealed class MarshalSlot
+    {
+        public readonly Action Step;
+        public MarshalSlot(Action step) { Step = step; }
+        public void Run() { Step(); }
     }
 }

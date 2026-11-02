@@ -932,21 +932,57 @@ root.Children.Count <= 1  ->  拒绝删除（保护最后一页）
 改完回归 **12/13 通过**，唯一失败项仍是控件备注持久化。
 
 
-### 21.7 控件备注的最终结论（三种插入方式都试过）
+### 21.7 控件备注的最终结论（已被 21.8 推翻，见下）
 
-在一次性文件上分别用三种方式把控件注解挂进 `diagram.zIuI()`，然后存盘 + 重启：
+~~在一次性文件上分别用三种方式把控件注解挂进 `diagram.zIuI()`，然后存盘 + 重启：~~
 
 | 插入方式 | 写入 | 重启后 |
 | --- | --- | --- |
-| `Add(UJiJ)` | 成功 | 读不回来 |
+| `Add(UJiJ)` | 成功 | ~~读不回来~~ |
 | `iJPr(UJiJ)` | 抛 `Annotation not in tree map` | — |
-| `nJPV(UJiJ)` | 成功 | 读不回来 |
+| `nJPV(UJiJ)` | 成功 | ~~读不回来~~ |
 
-三种方式下**页面备注都保持干净**（用 `(package, guid)` 构造），说明污染问题已解决，
-但控件备注本身**无法通过序列化**——面板里那条注解在存盘后不会被写进 `.rp`。
+~~三种方式下页面备注都保持干净（用 `(package, guid)` 构造），说明污染问题已解决，
+但控件备注本身无法通过序列化——面板里那条注解在存盘后不会被写进 `.rp`。~~
 
-结论：**控件备注按不可用处理**，需要备注就写页面级。已同步到 README 的能力矩阵与
-`docs/VERIFICATION.md`。
+~~结论：控件备注按不可用处理，需要备注就写页面级。~~
+
+### 21.8 控件备注的真正修复（推翻 21.7）
+
+合并 macOS 适配层后重查此问题，发现 21.7 的两个结论都判错了因。真实机制有两个：
+
+**坑一：`UJiJ.gJiI(propId)` 对未赋值字段返回静态共享对象。**
+`tJiN.UJiJ` 的字段值存在实例自己的 `PJiO` 字典里，但 `gJiI` 在字典未命中时
+`return mJig()`——即静态默认富文本 `qJiU`（`rSma`）。对一个新注解直接
+`rich.Text = ...` 改的是**全局静态对象**；随后 `XJi5` 把同一个静态引用存进每条注解的
+`PJiO`，谁最后写谁生效——这就是"页面备注读回控件备注文本"和"两种构造之间摇摆"的真相。
+修法：写值前 `LSmd()` 克隆（`rSma.LSmd` 是复制构造），只写克隆体。
+
+**坑二：`UJiJ(package, guid)` 双参构造把注解的对象身份设成控件的 Guid。**
+`btdo(btdo, Guid)` 基构造用该 Guid 作为注解在包对象图里的身份。存盘后引用按身份解析，
+重载时这条"注解引用"解析到的是**同 Guid 的控件本体**——注解没了，
+注解树（`GJiu`，TypeName=`Axure:AnnotationTreeMap`）里多出一个 TextBox 载荷节点，
+`QJPN()` 的 `Cast<UJiJ>` 从此对整棵树抛 InvalidCastException，读取和后续存盘全部炸掉。
+21.3 记录的"两种构造之间摇摆"正是这两个坑叠加的假象：单参构造**本来就能持久化**
+（21.7 表里 `Add` 路线"读不回来"其实是坑一把内容写串了，而非丢失）。
+
+**正确配方**（`ops.set_widget_note` 现行实现）：
+
+```
+ann   = new UJiJ(package)          // 单参：注解获得自己的身份
+ann.vJi6(widgetGuid)               // OwnerId 只是普通字段
+ann.JJik("DiagramObject")
+rich  = ann.gJiI(propId)           // 静态默认，只读
+fresh = rich.LSmd()                // 克隆！
+fresh.Text = ...
+ann.XJi5(fieldName, fresh)
+col.Add(ann)                       // 裸 Add 与 diagram.HJaz 都能持久化
+```
+
+实测（`tools/regression_ascii.py` B 阶段）：同页 1 条页面备注 + 2 条控件备注，
+保存 → 杀进程 → 重开 → 全部原样读回，页面备注不受影响。
+`widget_notes` 读取时如遇到历史脏文件（注解树里有非注解节点），
+会自动剔除坏节点（`UIl1`）再读——老文件不再炸读取。
 
 ## 22. MCP 协议层的优化
 
@@ -1030,3 +1066,61 @@ public class TI3Q : Exception {
 下次再看到那个框：**先看它的详细信息/InnerException**。如果框里有"复制"/"Details"，
 把内容发我；没有的话，把出错前一步调的工具名告我，桥的日志
 （`%TEMP%\axure-bridge.log`）里 `GUARD swallowed:` 开头的行也会带出真实异常。
+
+## 24. macOS 适配层合并后的 Windows 修复与新能力
+
+### 24.1 UI 封送回归：Axure 是 WinForms，不是 WPF
+
+macOS PR 把"找不到 UI 分发器就在 worker 线程直接跑"改成了 fail-closed（本意正确），
+但在 Windows 上直接把所有文档工具打挂：docs 一进来就报
+"Axure UI dispatcher unavailable"。原因：
+
+- WPF 探测永远失败——System.Windows.Application.Current 为 null（23 节早就记过：
+  Axure 用自己的消息循环）。实际上 **Axure RP 11 Windows 是 WinForms**：
+  宿主类 Y1N5.J1Nt.EIZm() 里就是 System.Windows.Application.DoEvents()。
+- Axure 自己的 UI 封送器是 s95L.M3GD(xbCw run, bool sync = true)（实现在 J1Nt）：
+  sync=true 走 Control.Invoke（同步），alse 走 BeginInvoke；xbCw 是
+  public delegate void xbCw()。旧探测只认"单参数且参数类型可赋给 Delegate"的方法，
+  而 M3GD 有**两个**参数——永远探测不到，于是旧代码一直走 worker 线程兜底，
+  PR 去掉兜底后无处可去。
+
+修法（ridge/UiThread.cs）：探测 M3GD 时记下委托类型与参数个数，
+调用时用 Delegate.CreateDelegate(委托类型, per-call slot, nameof(slot.Run))
+构造真正的 xbCw，以 M3GD(dlg, true) 同步封送到 UI 线程；
+PR 的 TCS + state 守卫（取消/仍在运行）原样保留。修完后所有调用都走 Axure
+自己认可的 UI 线程路径（它家 Axure.McpServer.DocumentToolService 也这么干），
+比旧的 worker 线程直跑更正确。
+
+### 24.2 控件复制：djol + Paste（Windows 新工具 axure_copy_widget）
+
+Axure 自己的复制粘贴就两条反射调用，都挂在画布编辑器的内部 helper
+EFql.EFqs+ujoT（client.Editor.LFyv）上：
+
+`
+djol(client, diagram, IEnumerable<KJm7> widgets, bool, false, false)  -> bool  复制进 Axure 剪贴板
+Paste(m5wr.f5wV location)                                             -> bool  粘贴
+`
+
+要点：
+
+- 粘贴副本**左上角落在 location 上**（不是"location + 控件自身矩形"——那是 zjzI 草稿
+  插入路径的语义，Paste 内部传的 P_3=true 改变了落点含义）。
+- 副本是**深拷贝**：文本、样式（Fill/圆角/粗体实测全带）、几何、交互都在；
+  走编辑器管线，Ctrl+Z 能撤。
+- 副本沿用源控件的名字，落工具前必须改名（否则 ind_widget 撞名）。
+- 识别副本用 identity().id 差分，**不能用句柄差分**——commit() 重建模型后
+  全部句柄都会重编。
+
+### 24.3 图片读回（Windows 新工具 axure_get_widget_image）
+
+ImageBox 的 Image 属性是 dta1.QtaH（struct）。读回链路：
+
+`
+image = widget.Image            // QtaH
+stream = image.dtap()           // 内嵌资产时是 MemoryStream
+bytes  = stream.ToArray()       // base64 回传 Python，head=89504e47 真 PNG
+length = image.Length           // 与字节数一致
+`
+
+注意 QtaH 的 taT() 返回的是**格式串**（"png"），不是哈希；SHA-256 在 Python 侧算。
+无资产 ImageBox 的 dtap() 会抛 NRE，按空图片处理（与 Mac 侧 bug #22 同款）。

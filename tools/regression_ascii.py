@@ -22,6 +22,7 @@ FOLDER = "VerifyGroup"
 PAGE_A, PAGE_B, PAGE_C = "PageAlpha", "PageBeta", "PageGamma"
 NOTE = "regression page note"
 WNOTE = "button note text"
+WNOTE_A = "alpha button note"
 
 
 def make_png(width=120, height=80, rgb=(20, 160, 90)):
@@ -130,6 +131,7 @@ def main():
                                          "width": 140, "height": 90, "page_name": PAGE_A}),
         ("set_image", "axure_set_image", {"name": "img", "image_base64": png, "filename": "v.png",
                                           "page_name": PAGE_A}),
+        ("get_image", "axure_get_widget_image", {"name": "img", "page_name": PAGE_A}),
         ("add_tbl", "axure_add_widget", {"kind": "table", "name": "tbl", "x": 60, "y": 260,
                                          "width": 380, "height": 120, "page_name": PAGE_A}),
         ("set_table", "axure_set_table", {"name": "tbl", "rows": 2, "columns": 2,
@@ -165,11 +167,15 @@ def main():
         ("ungroup", "axure_ungroup", {"name": "grp", "page_name": PAGE_A}),
         ("page_note", "axure_set_page_note", {"text": NOTE, "page_name": PAGE_A}),
         ("get_page_notes", "axure_get_page_notes", {"page_name": PAGE_A}),
+        ("widget_note_a", "axure_set_widget_note", {"name": "btn", "text": WNOTE_A,
+                                                    "page_name": PAGE_A}),
         ("add_btn_delta", "axure_add_widget", {"kind": "button", "name": "btnD", "text": "Delta",
                                               "x": 80, "y": 80, "width": 140, "height": 40,
                                               "page_name": "PageDelta"}),
         ("widget_note", "axure_set_widget_note", {"name": "btnD", "text": WNOTE,
                                                  "page_name": "PageDelta"}),
+        ("copy_widget", "axure_copy_widget", {"name": "btnD", "new_name": "btnD_copy",
+                                              "x": 80, "y": 160, "page_name": "PageDelta"}),
         ("get_widget_notes", "axure_get_widget_notes", {"page_name": PAGE_A}),
         ("interaction", "axure_add_interaction", {"name": "btn", "event": "OnClick",
                                                   "action": "wait", "wait_ms": 250,
@@ -212,6 +218,9 @@ def main():
         ("interactions", "axure_get_interactions", {"name": "btn", "page_name": PAGE_A}),
         ("page_notes", "axure_get_page_notes", {"page_name": PAGE_A}),
         ("widget_notes", "axure_get_widget_notes", {"page_name": "PageDelta"}),
+        ("widget_notes_a", "axure_get_widget_notes", {"page_name": PAGE_A}),
+        ("get_page_delta", "axure_get_page", {"page_name": "PageDelta"}),
+        ("image_read", "axure_get_widget_image", {"name": "img", "page_name": PAGE_A}),
         ("panel", "axure_panel_states", {"name": "pnl", "page_name": PAGE_A}),
         ("render", "axure_render_page", {"page_name": PAGE_A, "max_dimension": 900}),
     ]
@@ -246,6 +255,21 @@ def main():
     wn = got["widget_notes"].get("notes", [])
     record("B:widget_note", any(WNOTE in str(n.get("fields", {})) for n in wn),
            str([n.get("fields") for n in wn][:1]))
+    wna = got["widget_notes_a"].get("notes", [])
+    record("B:widget_note_a",
+           any(n.get("widget") == "btn" and WNOTE_A in str(n.get("fields", {})) for n in wna),
+           "page note and widget note coexist; " + str([n.get("widget") for n in wna]))
+
+    delta = [w["Name"] for w in got["get_page_delta"].get("widgets", [])]
+    delta_widgets = got["get_page_delta"].get("widgets", [])
+    copy_info = next((w for w in delta_widgets if w["Name"] == "btnD_copy"), {})
+    record("B:copy_widget", "btnD_copy" in delta and copy_info.get("Text") == "Delta",
+           str({k: copy_info.get(k) for k in ("Name", "Text", "X", "Y")}))
+
+    image_before = payload(by["get_image"]).get("bytes")
+    image_after = got["image_read"].get("bytes")
+    record("B:image_bytes", image_before == image_after and bool(image_after),
+           f"{image_before} -> {image_after}")
 
     states = got["panel"].get("states", [])
     record("B:panel_states", len(states) == 2, str(states))
@@ -256,7 +280,8 @@ def main():
     record("B:save_as", os.path.exists(COPY), "copy exists")
 
     order = ("B:page_tree", "B:move_page", "B:widgets", "B:update_widget", "B:style",
-             "B:interaction", "B:page_note", "B:widget_note", "B:panel_states", "B:image",
+             "B:interaction", "B:page_note", "B:widget_note", "B:widget_note_a",
+             "B:copy_widget", "B:image_bytes", "B:panel_states", "B:image",
              "B:table", "B:render", "B:save_as")
     passed = 0
     lines = ["# Verification report", "",

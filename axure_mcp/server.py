@@ -112,6 +112,26 @@ TOOLS = [
         },
     },
     {
+        "name": "axure_copy_widget",
+        "description": ("Duplicate a widget on the same page via Axure's own clipboard: text, style, "
+                        "geometry and interactions are all carried over. The copy lands with its "
+                        "top-left corner at x/y (default: 24px right and below the source) and gets "
+                        "new_name, or '<source>_copy' plus a numeric suffix when taken."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "widget_id": {"type": "integer"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "new_name": {"type": "string"},
+                "page_id": {"type": "string"},
+                "page_name": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "axure_render_page",
         "description": "Render a page to PNG with Axure's own renderer and return the image.",
         "inputSchema": {
@@ -441,8 +461,8 @@ TOOLS += PAGE_TOOLS + [
     },
     {
         "name": "axure_set_widget_note",
-        "description": ("Attach a note to a widget. Refused when the page already has a page note: Axure "
-                        "shares annotation storage, so keeping both would overwrite the page note after a reload."),
+        "description": ("Attach a note to a widget. Page notes and widget notes coexist on the same "
+                        "page and both survive save/reload."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -459,7 +479,7 @@ TOOLS += PAGE_TOOLS + [
     },
     {
         "name": "axure_get_widget_notes",
-        "description": "List widget notes on the page (owner id, kind, field values).",
+        "description": "List widget notes on the page (owner id, widget name, kind, field values).",
         "inputSchema": {
             "type": "object",
             "properties": {"page_id": {"type": "string"}, "page_name": {"type": "string"}},
@@ -481,6 +501,22 @@ TOOLS += PAGE_TOOLS + [
                 "page_name": {"type": "string"},
             },
             "required": ["image_base64"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "axure_get_widget_image",
+        "description": ("Read the image embedded in an ImageBox: byte count and SHA-256, optionally the "
+                        "raw bytes as base64 (include_data=true). Use it to verify what set_image stored."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "widget_id": {"type": "integer"},
+                "include_data": {"type": "boolean", "description": "Include base64 image data; default false."},
+                "page_id": {"type": "string"},
+                "page_name": {"type": "string"},
+            },
             "additionalProperties": False,
         },
     },
@@ -742,10 +778,6 @@ def _adapt_tool_for_mac(tool: dict) -> dict:
         adapted["description"] = (
             "Replace a droplist/listbox option list and selection. Empty lists are supported."
         )
-    elif name == "axure_set_widget_note":
-        adapted["description"] = (
-            "Write an independent widget note. Mac page notes and widget notes coexist."
-        )
     elif name == "axure_group":
         adapted["description"] = (
             "Group top-level widgets into a Layer. Use axure_ungroup to dissolve it."
@@ -933,6 +965,15 @@ def tool_axure_delete_widget(args: dict) -> dict:
     ok = app.delete_widget(package, name=args.get("name") or "", handle=args.get("widget_id"))
     app.save(package)
     return _json({"page": page_name, "deleted": ok, "saved": True})
+
+
+def tool_axure_copy_widget(args: dict) -> dict:
+    app = _app()
+    package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
+    info = app.copy_widget(package, name=args.get("name") or "", handle=args.get("widget_id"),
+                           x=args.get("x"), y=args.get("y"), new_name=args.get("new_name"))
+    app.save(package)
+    return _json({"page": page_name, "widget": info, "saved": True})
 
 
 def tool_axure_render_page(args: dict) -> dict:
@@ -1141,6 +1182,14 @@ def tool_axure_set_image(args: dict) -> dict:
     return _json({"page": page_name, **result, "saved": True})
 
 
+def tool_axure_get_widget_image(args: dict) -> dict:
+    app = _app()
+    package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
+    result = app.widget_image(package, args.get("name") or "", args.get("widget_id"),
+                              include_data=bool(args.get("include_data")))
+    return _json({"page": page_name, **result})
+
+
 def tool_axure_set_table(args: dict) -> dict:
     app = _app()
     package, page_id, page_name = _open(app, args.get("page_id"), args.get("page_name"))
@@ -1213,6 +1262,7 @@ HANDLERS = {
     "axure_add_widget": tool_axure_add_widget,
     "axure_update_widget": tool_axure_update_widget,
     "axure_delete_widget": tool_axure_delete_widget,
+    "axure_copy_widget": tool_axure_copy_widget,
     "axure_render_page": tool_axure_render_page,
     "axure_save": tool_axure_save,
     "axure_page_tree": tool_axure_page_tree,
@@ -1237,6 +1287,7 @@ HANDLERS = {
     "axure_set_rich_text": tool_axure_set_rich_text,
     "axure_set_table": tool_axure_set_table,
     "axure_set_image": tool_axure_set_image,
+    "axure_get_widget_image": tool_axure_get_widget_image,
     "axure_set_widget_note": tool_axure_set_widget_note,
     "axure_get_widget_notes": tool_axure_get_widget_notes,
     "axure_set_page_note": tool_axure_set_page_note,
