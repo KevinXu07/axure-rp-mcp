@@ -1,7 +1,9 @@
-"""Adapter for the independently verified Client.Mac 11.0.0.4137 model.
+"""Adapter for Client.Mac on supported Axure versions.
 
-Internal names are version specific. Keep unsupported tools gated in the server;
-never fall back to Windows reflection names for a Mac document.
+Internal (obfuscated) member names roll on every release, so they live in a
+per-version table in ``macos_symbols`` and are reached through ``self.S[key]``.
+Keep unsupported tools gated in the server; never fall back to Windows
+reflection names for a Mac document.
 """
 import base64
 import hashlib
@@ -12,6 +14,7 @@ import uuid
 
 from .ops import Axure, AxureError, EMPTY_GUID, WIDGET_TYPES
 from .client import BridgeError
+from .macos_symbols import symbols_for
 
 SUPPORTED_TOOLS = frozenset({
     'axure_status', 'axure_list_pages', 'axure_page_tree', 'axure_get_page',
@@ -33,10 +36,33 @@ TEXT_WIDGETS = frozenset({'button', 'checkbox', 'radiobutton', 'textbox', 'texta
 class MacAxure(Axure):
     OPEN_DOCUMENT_TIMEOUT = 20.0
 
+    def __init__(self, *args, app_version=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.S = symbols_for(app_version)
+
     def _document_key(self, doc):
         # Bridge handles are allocated per response. The native hash remains
         # stable until that document window closes.
         return doc.get('id') or doc.get('fileName')
+
+    def _doc_file_path(self, doc):
+        # Older bridges left fileName null on Mac builds where the obfuscated
+        # getter had been re-rolled; resolve it from the live object so callers
+        # (open_file's match loop) keep working on those builds.
+        handle = doc.get('handle')
+        if handle is None:
+            return ''
+        try:
+            file = self.b.get_on(handle, 'CurrentFile')
+        except BridgeError:
+            return ''
+        if not isinstance(file, dict) or '$h' not in file:
+            return ''
+        try:
+            path = self.b.invoke_on(file['$h'], self.S['file_name'])
+        except BridgeError:
+            return ''
+        return os.path.realpath(os.path.expanduser(path or ''))
 
     def _doc(self):
         docs = self.documents()
@@ -75,7 +101,7 @@ class MacAxure(Axure):
 
     def file_name(self):
         file = self.b.get_on(self.client, 'CurrentFile')['$h']
-        return self.b.invoke_on(file, 'fIed') or ''
+        return self.b.invoke_on(file, self.S['file_name']) or ''
 
     def sitemap(self):
         return self.b.get_on(self.document, 'Sitemap')['$h']
@@ -89,10 +115,15 @@ class MacAxure(Axure):
             out = []
             for item in self.b.iter(children, limit=4000):
                 handle = item['$h']
-                payload = self.b.invoke_on(sitemap, 'nbG8', [{'$h': handle}])
+                payload = self.b.invoke_on(sitemap, self.S['node_payload'], [{'$h': handle}])
+                if payload is None:
+                    # a sitemap node whose payload ctor returned null (e.g. a
+                    # leftover orphan from a failed probe) has no id to report;
+                    # skip it instead of crashing the whole walk.
+                    continue
                 is_page = isinstance(payload, str)
                 ident = payload if is_page else self.b.get_on(payload['$h'], 'FolderId')
-                out.append({'id': ident, 'name': self.b.invoke_on(sitemap, 'hH42', [{'$h': handle}]),
+                out.append({'id': ident, 'name': self.b.invoke_on(sitemap, self.S['node_name'], [{'$h': handle}]),
                             'type': 'page' if is_page else 'folder', 'children': walk(handle)})
             return out
         return walk(root)
@@ -125,20 +156,20 @@ class MacAxure(Axure):
             return False
         if not walk(self.page_tree()):
             raise AxureError(f'no page or folder with id {page_id}')
-        return self.b.invoke_on(self.sitemap(), 'ybG0', [{'$guid': page_id}])['$h']
+        return self.b.invoke_on(self.sitemap(), self.S['node_by_guid'], [{'$guid': page_id}])['$h']
 
     def create_page(self, name, parent_id=None, index=0):
         sitemap = self.sitemap()
         parent = self._find_node(parent_id) if parent_id else self.b.get_on(sitemap, 'Tree')['$h']
         ident = str(uuid.uuid4())
-        node = self.b.invoke_on(sitemap, 'kbGu', [None, {'$h': parent}, index, {'$guid': ident}])['$h']
-        self.b.invoke_on(sitemap, 'AH4r', [{'$h': node}, name])
+        node = self.b.invoke_on(sitemap, self.S['tree_insert'], [None, {'$h': parent}, index, {'$guid': ident}])['$h']
+        self.b.invoke_on(sitemap, self.S['node_rename'], [{'$h': node}, name])
         self.open_page(ident)
         self.save()
         return {'id': ident, 'name': name, 'type': 'page'}
 
     def rename_page(self, page_id, name):
-        self.b.invoke_on(self.sitemap(), 'AH4r', [{'$h': self._find_node(page_id)}, name])
+        self.b.invoke_on(self.sitemap(), self.S['node_rename'], [{'$h': self._find_node(page_id)}, name])
         self.save()
 
     def _subtree_ids(self, page_id):
@@ -164,7 +195,7 @@ class MacAxure(Axure):
             raise AxureError('cannot delete the last page or a subtree containing all pages')
         node = self._find_node(page_id)
         self.open_page(remaining[0])
-        self.b.invoke_on(node, 'VbmL')
+        self.b.invoke_on(node, self.S['node_detach'])
         self.save()
 
     def move_page(self, page_id, parent_id=None, index=0):
@@ -174,8 +205,8 @@ class MacAxure(Axure):
         sitemap = self.sitemap()
         node = self._find_node(page_id)
         parent = self._find_node(parent_id) if parent_id else self.b.get_on(sitemap, 'Tree')['$h']
-        self.b.invoke_on(node, 'VbmL')
-        self.b.invoke_on(sitemap, 'KbG9', [{'$h': node}, {'$h': parent}, index])
+        self.b.invoke_on(node, self.S['node_detach'])
+        self.b.invoke_on(sitemap, self.S['node_move'], [{'$h': node}, {'$h': parent}, index])
         self.save()
 
     def add_widget(self, package, kind, name='', text=None, x=0, y=0, width=120, height=40,
@@ -196,13 +227,13 @@ class MacAxure(Axure):
             if not handle:
                 continue
             try:
-                ancestor = self.b.invoke_on(handle, 'Cb6A')
+                ancestor = self.b.invoke_on(handle, self.S['widget_layer'])
             except BridgeError:
                 ancestor = None
             if not deep and ancestor is not None:
                 continue
             try:
-                ident = self.b.invoke_on(handle, 'wVqm')
+                ident = self.b.invoke_on(handle, self.S['widget_guid'])
             except BridgeError:
                 ident = None
             key = ('id', ident) if ident is not None else ('handle', handle)
@@ -213,7 +244,7 @@ class MacAxure(Axure):
                 inner = self.b.get_on(handle, 'DiagramObjects')['$h']
                 for child in self._collect_handles(inner, True, depth + 1):
                     try:
-                        ident = self.b.invoke_on(child, 'wVqm')
+                        ident = self.b.invoke_on(child, self.S['widget_guid'])
                     except BridgeError:
                         ident = None
                     key = ('id', ident) if ident is not None else ('handle', child)
@@ -228,9 +259,9 @@ class MacAxure(Axure):
         # RefreshOuterObject reconstructs the model. A previously returned
         # bridge handle still points at its old object; bind by persistent GUID
         # within the requested page, rather than editing that detached object.
-        ident = self.b.invoke_on(handle, 'wVqm')
+        ident = self.b.invoke_on(handle, self.S['widget_guid'])
         for live in self._collect_handles(self.objects(package), deep=True):
-            if self.b.invoke_on(live, 'wVqm') == ident:
+            if self.b.invoke_on(live, self.S['widget_guid']) == ident:
                 return live
         raise AxureError('widget handle is not present on the requested Mac page')
 
@@ -245,15 +276,33 @@ class MacAxure(Axure):
             channels = [int(raw[i:i+2], 16) for i in (0, 2, 4)]
         except ValueError as exc:
             raise AxureError('colour must be #RRGGBB') from exc
-        rgb = self.b.invoke('uXeP.xXem', 'mXen', channels)['$h']
-        return self.b.ctor('vXnb.rXni', [{'$h': rgb}])['$h']
+        rgb = self.b.invoke(self.S['color'], self.S['color_rgb'], channels)['$h']
+        return self.b.ctor(self.S['fill'], [{'$h': rgb}])['$h']
 
     def _rgb(self, colour_handle):
         return tuple(int(self.b.get_on(colour_handle, key)) for key in ('R', 'G', 'B'))
 
     def set_rect(self, widget, x, y, width, height):
-        rect = self.b.ctor('bXhd.pXh4', [float(x), float(y), float(width), float(height)])
-        self.b.invoke_on(widget, 'FbsR', [{'$h': rect['$h']}, True])
+        rect = self.b.ctor(self.S['rect'], [float(x), float(y), float(width), float(height)])
+        self.b.invoke_on(widget, self.S['set_bounds'], [{'$h': rect['$h']}, True])
+
+    def set_rich_text(self, package, name='', handle=None, text='', paragraphs=None):
+        # On Mac the widget's own Text property is the authoritative setter:
+        # assigning AttrString.Text inside RichTextPanel writes to a detached
+        # view object and the widget never picks it up. Write widget.Text and
+        # Axure syncs the rich panel for us.
+        widget = self.resolve_widget(package, name, handle)
+        body = text if paragraphs is None else '\n'.join(paragraphs)
+        if not body:
+            raise AxureError('set_rich_text needs text or paragraphs')
+        self.b.set_on(widget, 'Text', body)
+        return {'widget': self.widget_info(widget).get('Name'), 'paragraphs': body.count('\n') + 1,
+                'mode': 'rich-text'}
+
+    def rich_text(self, widget):
+        # Text on the widget mirrors the rich panel's flattened content; cheaper
+        # than dereferencing RichTextPanel.AttrString and equivalent on this build.
+        return self.b.get_on(widget, 'Text') or ''
 
     def _insert_widget(self, package, widget, x, y):
         # This model path persists, but does not create an undo entry. Reported
@@ -269,7 +318,7 @@ class MacAxure(Axure):
                 raise AxureError('refusing to save an inactive Mac package')
         self.b.invoke_on(self.client, 'CommitOuterObject', [False])
         file = self.b.get_on(self.client, 'CurrentFile')['$h']
-        self.b.invoke_on(file, 'pIAO', [{'$h': package or self.active_package()}, None])
+        self.b.invoke_on(file, self.S['commit_pkg'], [{'$h': package or self.active_package()}, None])
         self.b.invoke_on(file, 'Save')
         self.b.invoke_on(self.client, 'RefreshOuterObject')
         self.b.call('flush_paint')
@@ -291,6 +340,7 @@ class MacAxure(Axure):
             matches = [
                 doc for doc in self.documents()
                 if os.path.realpath(os.path.expanduser(doc.get('fileName') or '')) == target
+                or self._doc_file_path(doc) == target
             ]
             if matches or time.monotonic() >= deadline:
                 break
@@ -312,9 +362,9 @@ class MacAxure(Axure):
     def create_folder(self, name, parent_id=None, index=0):
         sitemap = self.sitemap()
         parent = self._find_node(parent_id) if parent_id else self.b.get_on(sitemap, 'Tree')['$h']
-        folder = self.b.ctor('kb56.rb5r', [{'$h': self.document}, name])
+        folder = self.b.ctor(self.S['folder'], [{'$h': self.document}, name])
         ident = self.b.get_on(folder['$h'], 'FolderId')
-        self.b.invoke_on(sitemap, 'kbGu', [None, {'$h': parent}, index, folder])
+        self.b.invoke_on(sitemap, self.S['tree_insert'], [None, {'$h': parent}, index, folder])
         self.save()
         return {'id': ident, 'name': name, 'type': 'folder'}
 
@@ -326,9 +376,10 @@ class MacAxure(Axure):
         if self.b.identity(widget)['type'] not in {
                 WIDGET_TYPES['droplist'], WIDGET_TYPES['listbox']}:
             raise AxureError('set_list_items requires a droplist or listbox')
-        fresh = self.b.ctor('System.Collections.Generic.List`1[[FV82.kV86, Client.Mac]]')['$h']
+        item_type = self.S['listitem']
+        fresh = self.b.ctor(f'System.Collections.Generic.List`1[[{item_type}, Client.Mac]]')['$h']
         for index, label in enumerate(items):
-            item = self.b.ctor('FV82.kV86', [{'$h': package}, label, index == selected])
+            item = self.b.ctor(item_type, [{'$h': package}, label, index == selected])
             self.b.invoke_on(fresh, 'Add', [item])
         self.b.set_on(widget, 'Options', {'$h': fresh})
         return {'widget': self.widget_info(widget).get('Name'), 'items': items, 'selected': selected}
@@ -347,8 +398,12 @@ class MacAxure(Axure):
             raise
         if not length:
             return b''
-        stream = self.b.invoke_on(image['$h'], 'DVNA')['$h']
-        return base64.b64decode(self.b.invoke_on(stream, 'ToArray'))
+        stream = self.b.invoke_on(image['$h'], self.S['img_stream'])
+        if not isinstance(stream, dict) or '$h' not in stream:
+            # Length reports bytes but the backing stream is absent for an
+            # ImageBox whose asset was never materialised on this build.
+            return b''
+        return base64.b64decode(self.b.invoke_on(stream['$h'], 'ToArray'))
 
     def set_image(self, package, name='', handle=None, image_bytes=None, filename='image.png'):
         if not image_bytes:
@@ -359,7 +414,7 @@ class MacAxure(Axure):
         stream = self.b.ctor('System.IO.MemoryStream', [base64.b64encode(image_bytes).decode('ascii')])
         # The third string is a cache key, NOT an image format. Passing "png"
         # aliases every image to the first asset, including same-length replacements.
-        image = self.b.ctor('qVf5.tVf0', [stream, filename, None, False])
+        image = self.b.ctor(self.S['image'], [stream, filename, None, False])
         self.b.set_on(widget, 'Image', image)
         if self.image_bytes(widget) != image_bytes:
             raise AxureError('Axure did not retain the supplied image bytes')
@@ -431,7 +486,7 @@ class MacAxure(Axure):
             self.b.invoke_on(widget, 'set_RowHeights', [{'$arr': row_heights}])
         if column_widths is not None:
             for index, width in enumerate(column_widths):
-                self.b.invoke_on(widget, 'PIyf', [index, float(width), False])
+                self.b.invoke_on(widget, self.S['col_width'], [index, float(width), False])
         for r, row in enumerate(data or []):
             for c, text in enumerate(row):
                 self.b.set_on(cells[r * columns + c]['$h'], 'Text', text)
@@ -453,7 +508,7 @@ class MacAxure(Axure):
         if state_name:
             target = self.b.iter(self.b.get_on(widget, 'SubDiagrams')['$h'], limit=1000)[-1]['$h']
             edit = self.b.invoke('Axure.DocumentModel.Objects.DynamicPanelStatesEdit',
-                                 'WIf4', [{'$h': target}, state_name])
+                                 self.S['panel_rename'], [{'$h': target}, state_name])
             if edit:
                 self.b.invoke_on(edit['$h'], 'Commit')
         result = self.panel_states(package, handle=widget)
@@ -467,8 +522,8 @@ class MacAxure(Axure):
         if len(names) != len(set(names)):
             raise AxureError('widget names must be unique in this operation')
         handles = [self.resolve_widget(package, name) for name in names]
-        top = {self.b.invoke_on(h, 'wVqm') for h in self._collect_handles(self.objects(package))}
-        if any(self.b.invoke_on(h, 'wVqm') not in top for h in handles):
+        top = {self.b.invoke_on(h, self.S['widget_guid']) for h in self._collect_handles(self.objects(package))}
+        if any(self.b.invoke_on(h, self.S['widget_guid']) not in top for h in handles):
             raise AxureError('operation requires top-level widgets on this page')
         return handles
 
@@ -522,13 +577,13 @@ class MacAxure(Axure):
     def z_order(self, package, names, action='front'):
         if action not in {'front', 'back'}:
             raise AxureError('z-order supports front and back')
-        selected = {self.b.invoke_on(h, 'wVqm') for h in self._top_widgets(package, names)}
+        selected = {self.b.invoke_on(h, self.S['widget_guid']) for h in self._top_widgets(package, names)}
         objects = self.objects(package)
         ordered = self._collect_handles(objects)
         # Sending the complement backwards raises a selection without removing,
         # cloning or damaging rich text / nested objects. Preserve relative order.
         for widget in reversed(ordered):
-            chosen = self.b.invoke_on(widget, 'wVqm') in selected
+            chosen = self.b.invoke_on(widget, self.S['widget_guid']) in selected
             if chosen == (action == 'back'):
                 self.b.invoke_on(objects, 'SendToBack', [{'$h': widget}])
         return names
@@ -536,15 +591,15 @@ class MacAxure(Axure):
     def _note_fields(self, widget=False):
         prop = 'DiagramObjectAnnotationFieldSet' if widget else 'PageFragmentAnnotationFieldSet'
         holder = self.b.get_on(self.document, prop)['$h']
-        fields = self.b.invoke_on(holder, 'dXWD')['$h']
-        entries = self.b.iter(self.b.invoke_on(fields, 'cXBB')['$h'], limit=100)
+        fields = self.b.invoke_on(holder, self.S['fieldset_get'])['$h']
+        entries = self.b.iter(self.b.invoke_on(fields, self.S['field_entries'])['$h'], limit=100)
         return [{'name': self.b.get_on(e['$h'], 'Name'),
                  'id': self.b.get_on(e['$h'], 'PropertyNameId')} for e in entries]
 
     def _read_notes(self, annotation, fields):
         # Read only stored fields. Getter fallbacks return a shared default rich
         # string, which must never be mistaken for a note actually set here.
-        store = self.b.get_on(annotation, 'GbOY')['$h']
+        store = self.b.get_on(annotation, self.S['ann_store'])['$h']
         raw = {}
         for item in self.b.iter(store, limit=100):
             key = self.b.get_on(item['$h'], 'Key')
@@ -556,12 +611,12 @@ class MacAxure(Axure):
         target = next((f for f in fields if field is None or f['name'] == field), None)
         if target is None:
             raise AxureError(f'unknown note field {field!r}; available: {[f["name"] for f in fields]}')
-        original = self.b.invoke_on(annotation, 'UbJF', [{'$guid': target['id']}])['$h']
+        original = self.b.invoke_on(annotation, self.S['ann_fieldval'], [{'$guid': target['id']}])['$h']
         # Mutating original aliases the shared empty template across page and
         # widget notes. Clone the attributed string before modifying it.
-        rich = self.b.invoke_on(original, 'tAs4')['$h']
+        rich = self.b.invoke_on(original, self.S['rich_clone'])['$h']
         self.b.set_on(rich, 'Text', text)
-        self.b.invoke_on(annotation, 'SbJ9', [target['name'], {'$h': rich}])
+        self.b.invoke_on(annotation, self.S['ann_setfield'], [target['name'], {'$h': rich}])
         return {'field': target['name'], 'text': text, 'empty': not bool(text)}
 
     def page_notes(self, package):
@@ -577,8 +632,8 @@ class MacAxure(Axure):
         fields = self._note_fields(True)
         if field is not None and field not in {f['name'] for f in fields}:
             raise AxureError(f'unknown widget note field {field!r}')
-        entries = self.b.iter(self.b.invoke_on(widget, 'tbyA')['$h'], limit=100)
-        annotation = entries[0]['$h'] if entries else self.b.invoke_on(widget, 'yHhE')['$h']
+        entries = self.b.iter(self.b.invoke_on(widget, self.S['ann_list'])['$h'], limit=100)
+        annotation = entries[0]['$h'] if entries else self.b.invoke_on(widget, self.S['ann_get'])['$h']
         result = self._write_note(annotation, fields, text, field)
         return {'widget': self.widget_info(widget).get('Name'), 'field': result['field'], 'note': text}
 
@@ -586,11 +641,11 @@ class MacAxure(Axure):
         fields = self._note_fields(True)
         result = []
         for widget in self._collect_handles(self.objects(package), deep=True):
-            entries = self.b.iter(self.b.invoke_on(widget, 'tbyA')['$h'], limit=100)
+            entries = self.b.iter(self.b.invoke_on(widget, self.S['ann_list'])['$h'], limit=100)
             for entry in entries:
                 annotation = entry['$h']
                 result.append({'owner': self.b.get_on(annotation, 'OwnerId'),
-                               'kind': self.b.invoke_on(annotation, 'pbJ7'),
+                               'kind': self.b.invoke_on(annotation, self.S['ann_kind']),
                                'fields': self._read_notes(annotation, fields)})
         return result
 
@@ -598,7 +653,7 @@ class MacAxure(Axure):
         kind = self.b.identity(widget)['type']
         if kind in {WIDGET_TYPES['droplist'], WIDGET_TYPES['listbox']}:
             entries = self.b.iter(self.b.get_on(widget, 'Options')['$h'], limit=2000)
-            return {'kind': 'list', 'items': [self.b.invoke_on(e['$h'], 'KV84') for e in entries],
+            return {'kind': 'list', 'items': [self.b.invoke_on(e['$h'], self.S['listitem_lbl']) for e in entries],
                     'selected': [i for i, e in enumerate(entries) if self.b.get_on(e['$h'], 'Selected')]}
         if kind == WIDGET_TYPES['image']:
             raw = self.image_bytes(widget)
@@ -623,7 +678,7 @@ class MacAxure(Axure):
                     'states': self.b.iter(self.b.get_on(widget, 'PanelStateNames')['$h'])}
         return None
     def _ix_map(self, widget):
-        return self.b.invoke_on(widget, 'GHhq')['$h']
+        return self.b.invoke_on(widget, self.S['ix_map'])['$h']
 
     def _ix_children(self, node):
         return self.b.iter(self.b.get_on(node, 'Children')['$h'], limit=1000)
@@ -633,13 +688,13 @@ class MacAxure(Axure):
         root = self.b.get_on(ix, 'Tree')['$h']
         result = []
         for event_node in self._ix_children(root):
-            ev = self.b.invoke_on(ix, 'nbG8', [event_node])['$h']
+            ev = self.b.invoke_on(ix, self.S['node_payload'], [event_node])['$h']
             record = {'type': self.b.get_on(ev, 'EventType'), 'cases': []}
             for case_node in self._ix_children(event_node['$h']):
-                case = self.b.invoke_on(ix, 'nbG8', [case_node])['$h']
+                case = self.b.invoke_on(ix, self.S['node_payload'], [case_node])['$h']
                 entry = {'description': self.b.get_on(case, 'Description'), 'actions': []}
                 for action_node in self._ix_children(case_node['$h']):
-                    action = self.b.invoke_on(ix, 'nbG8', [action_node])['$h']
+                    action = self.b.invoke_on(ix, self.S['node_payload'], [action_node])['$h']
                     info = {'TypeName': self.b.get_on(action, 'TypeName'),
                             'EditorText': self.b.get_on(action, 'EditorText')}
                     if 'WaitAction' in self.b.identity(action)['type']:
@@ -720,7 +775,7 @@ class MacAxure(Axure):
         cls, info_class = classes[action]
         durations = self.b.call('makedict', key='System.String', value='System.Double')
         result = self.b.ctor('Axure.DocumentModel.Interaction.' + cls, [{'$h': package}, durations])['$h']
-        path = self.b.ctor('hb8r.nb8K', [{'$h': package}, None, None, {'$guid': self.b.invoke_on(target, 'wVqm')}])
+        path = self.b.ctor(self.S['path'], [{'$h': package}, None, None, {'$guid': self.b.invoke_on(target, self.S['widget_guid'])}])
         if action == 'set_opacity':
             args = [float(value) * 100, 0.0]
         elif action == 'move':
@@ -738,7 +793,7 @@ class MacAxure(Axure):
         if action == 'rotate':
             self.b.set_on(info, 'RotateType', mode)
             self.b.set_on(self.b.get_on(info, 'DegreeLiteral')['$h'], 'RawValue', str(value))
-        mapping = self.b.get_on(result, 'FIE3')['$h']
+        mapping = self.b.get_on(result, self.S['action_map'])['$h']
         self.b.invoke_on(mapping, 'Add', [path, {'$h': info}])
         return result
 
@@ -777,30 +832,30 @@ class MacAxure(Axure):
         created_event = False
         try:
             for node in self._ix_children(root):
-                obj = self.b.invoke_on(ix, 'nbG8', [node])['$h']
+                obj = self.b.invoke_on(ix, self.S['node_payload'], [node])['$h']
                 if self.b.get_on(obj, 'EventType') == event:
                     event_node = node
                     break
             if event_node is None:
                 event_node = self.b.invoke_on(
-                    ix, 'kbGu',
+                    ix, self.S['tree_insert'],
                     [None, {'$h': root}, len(self._ix_children(root)), event_object])
                 created_event = True
             case = self.b.ctor('Axure.DocumentModel.Interaction.IxCase', [{'$h': package}])
             case_node = self.b.invoke_on(
-                ix, 'kbGu',
+                ix, self.S['tree_insert'],
                 [None, event_node, len(self._ix_children(event_node['$h'])), case])
             for index, action in enumerate(built):
-                self.b.invoke_on(ix, 'kbGu', [None, case_node, index, {'$h': action}])
+                self.b.invoke_on(ix, self.S['tree_insert'], [None, case_node, index, {'$h': action}])
         except BridgeError:
             if case_node is not None:
                 try:
-                    self.b.invoke_on(case_node['$h'], 'VbmL')
+                    self.b.invoke_on(case_node['$h'], self.S['node_detach'])
                 except BridgeError:
                     pass
             if created_event:
                 try:
-                    self.b.invoke_on(event_node['$h'], 'VbmL')
+                    self.b.invoke_on(event_node['$h'], self.S['node_detach'])
                 except BridgeError:
                     pass
             raise

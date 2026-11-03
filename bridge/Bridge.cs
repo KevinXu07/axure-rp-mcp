@@ -693,11 +693,30 @@ public static class Bridge
                 ["handle"] = HandleTable.Add(client),
                 ["docHandle"] = doc == null ? null : HandleTable.Add(doc),
                 ["nativeHandle"] = HandleTable.Add(nativeDoc),
-                ["fileName"] = file?.GetType().GetMethod("fIed", flags)?.Invoke(file, null)?.ToString(),
+                ["fileName"] = FileNameOf(file, flags),
                 ["displayName"] = nativeDoc.GetType().GetMethod("displayName", flags)?.Invoke(nativeDoc, null)?.ToString()
             });
         }
         return arr;
+    }
+
+    // Each Axure release re-obfuscates the file-path getter on CurrentFile.
+    // Try the known names in order; add the next release's roll here when it is
+    // discovered, keeping older entries for backward compatibility.
+    private static readonly string[] FilePathGetters = { "fIed", "cKrc" };
+
+    private static string FileNameOf(object file, BindingFlags flags)
+    {
+        if (file == null) return null;
+        var type = file.GetType();
+        foreach (var name in FilePathGetters)
+        {
+            var method = type.GetMethod(name, flags);
+            if (method == null) continue;
+            var value = method.Invoke(file, null)?.ToString();
+            if (!string.IsNullOrEmpty(value)) return value;
+        }
+        return null;
     }
 
     private static object FindActiveMacDocument(object controller)
