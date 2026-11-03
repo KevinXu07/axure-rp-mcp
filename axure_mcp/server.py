@@ -708,10 +708,18 @@ def _connect_app() -> Axure:
         info = bridge.ping()
         adapter = Axure
         if info.get("entry") == "Client.Mac":
-            if info.get("appVersion") != "11.0.0.4137":
-                raise AxureError("unsupported Mac Axure version; adapter verified only on 11.0.0.4137; rebuild the bridge if appVersion is missing")
+            # The Mac adapter carries a per-version obfuscated-symbol table and
+            # fails closed on a version it has no table for.
             from .macos import MacAxure
-            adapter = MacAxure
+            from .macos_symbols import symbols_for
+            ver = info.get("appVersion")
+            try:
+                symbols_for(ver)
+            except KeyError:
+                raise AxureError(
+                    f"unsupported Mac Axure version {ver!r}; adapter has symbol tables "
+                    "for 11.0.0.4137 and 11.0.0.4149")
+            return MacAxure(bridge=bridge, app_version=ver)
         return adapter(bridge=bridge)
     except Exception:
         bridge.close()
@@ -1508,7 +1516,7 @@ def handle_request(request: dict) -> None:
                 if name != "axure_status":
                     app = _app()
                     if name not in _supported_tools(app):
-                        raise AxureError(f"{name} is not supported by the Mac 11.0.0.4137 adapter; no changes made")
+                        raise AxureError(f"{name} is not supported by the Mac adapter; no changes made")
                 payload = handler(args)
             if "content" not in payload:
                 payload = {"content": [payload]}
