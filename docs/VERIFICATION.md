@@ -1,6 +1,6 @@
 # Verification report
 
-Generated: 2026-11-03 03:33
+Generated: 2026-11-05 01:59
 File: test/verify.rp (same file before and after the restart)
 
 Rule: an item passes only if it can be read back after save -> kill -> relaunch.
@@ -69,6 +69,7 @@ Phase B: 19/19
 | ix_hide | PASS |  |
 | ix_opacity | PASS |  |
 | ix_panel_state | PASS |  |
+| list_masters | PASS |  |
 | list_pages | PASS |  |
 | move_page | PASS |  |
 | page_note | PASS |  |
@@ -91,4 +92,4 @@ Phase B: 19/19
 | widget_note_a | PASS |  |
 | z_order | PASS |  |
 
-Phase A: 55
+Phase A: 56

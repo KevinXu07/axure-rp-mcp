@@ -31,7 +31,7 @@ AI: → axure_add_widget ×5 → axure_render_page → axure_save
 
 ## 平台支持
 
-Windows 注册 44 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
+Windows 注册 45 个工具。macOS 是独立适配层，已在 **Apple Silicon / Axure RP 11.0.0.4137 /
 .NET 8.0.11** 上通过真实 stdio MCP 调用、原生画布与 Preview、保存后退出并用新 PID 重启读回验证：
 支持 **35 个工具、16 类控件创建**。页面/文件夹、列表、图片替换、表格、富文本、动态面板状态、
 页面与控件备注、分组、层级、7 类交互动作均可持久化。
@@ -207,7 +207,7 @@ python tools\demo_v2.py                            # 从零生成一个演示原
 | 动态面板状态：读 / 新增 / 改名 | ✅ | 新增靠复制已有状态 |
 | 撤销 / 重做 | 分平台 | **Windows ✅ 撤销+重做（Redo 为新增）**；Mac 直接模型插入不产生撤销项，两者都不提供 |
 | 另存为 / 渲染导出 PNG | 分平台 | 另存为 = 落盘后复制文件；PNG 工具仅 Windows，Mac 原生 Preview 可人工验证 |
-| 母版 / 组件 | ❌ | 手写 `mJsm` 载荷过不了序列化校验，且失败会污染内存文档 |
+| 母版 / 组件 | ❌（读 ✅） | **新增 `axure_list_masters` 列出文档母版**；创建（`Editor.CreateMaster` + 自绘对话框 + `AutoNameMasters` 均试过，静默空转）与放置（路由已实现未验证）未打通，详见 RE 文档 26.4/26.5 |
 
 ## 关键限制
 

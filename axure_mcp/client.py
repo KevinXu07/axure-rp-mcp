@@ -129,6 +129,46 @@ class Bridge:
             except Exception:  # noqa: BLE001
                 pass
 
+    def confirm_dialogs(self, text: str, title: str | None = None) -> list[dict]:
+        """Complete modal dialogs (fill `text` into their first edit field, click the default
+        button) instead of cancelling them. With `title`, only dialogs whose title contains it are
+        touched - for flows that know the exact prompt, e.g. the WinForms "Create component" dialog
+        which never matches the generic error-dialog heuristics. Used from a second connection
+        while the blocking call waits on the UI thread."""
+        try:
+            probe = Bridge(port=self.port, timeout=4.0).connect()
+        except Exception:  # noqa: BLE001 - reporting path must never raise
+            return []
+        try:
+            return probe.call("dismiss", close=False, confirm=text, title=title) or []
+        except Exception:  # noqa: BLE001
+            return []
+        finally:
+            try:
+                probe.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def press_enter(self, title: str, attempt: int = 0) -> list[dict]:
+        """Send Enter / synthesise a click on modal dialogs with `title` in their title -
+        completes custom-drawn prompts (e.g. "Create component"). `attempt` varies the input
+        strategy across polls. Used from a second connection while the blocking call waits on
+        the UI thread."""
+        try:
+            probe = Bridge(port=self.port, timeout=4.0).connect()
+        except Exception:  # noqa: BLE001 - reporting path must never raise
+            return []
+        try:
+            return probe.call("dismiss", close=False, key_enter=True, title=title,
+                              attempt=attempt) or []
+        except Exception:  # noqa: BLE001
+            return []
+        finally:
+            try:
+                probe.close()
+            except Exception:  # noqa: BLE001
+                pass
+
     # ---------- operations ----------
 
     def ping(self) -> dict:

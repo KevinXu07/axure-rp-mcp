@@ -1385,6 +1385,78 @@ class Axure:
             pass
         return {"dissolved": layer_name, "members": restored}
 
+    # ---------- masters ----------
+
+    def _master_packages(self) -> list[dict]:
+        """The document's masters (components) as {id, name, handle} straight from the sitemap model.
+
+        Component nodes carry an mJsm package payload - the same classification page_tree uses
+        (a dict payload that is not a folder is a component).
+        """
+        sm = self.b.get_on(self.b.invoke_on(self.client, "nIXw")["$h"], "Sitemap")["$h"]
+        out = []
+
+        def walk(node: int) -> None:
+            try:
+                children = self.b.get_on(node, "Children")
+            except BridgeError:
+                return
+            for item in self.b.iter(children["$h"], limit=200) or []:
+                handle = item.get("$h") if isinstance(item, dict) else None
+                if not handle:
+                    continue
+                try:
+                    payload = self.b.invoke_on(sm, "xNFB", [{"$h": handle}])
+                except BridgeError:
+                    continue
+                if isinstance(payload, dict) and payload.get("$h"):
+                    if not self.b.identity(payload["$h"]).get("type", "").endswith("kJsl"):
+                        out.append({"id": self.b.get_on(payload["$h"], "PackageId"),
+                                    "name": self.b.invoke_on(sm, "IIw8", [{"$h": handle}]),
+                                    "handle": payload["$h"]})
+                walk(handle)
+
+        walk(self.b.get_on(sm, "Tree")["$h"])
+        return out
+
+    def masters(self) -> list[dict]:
+        """List the document's masters (components) with their ids and names."""
+        return [{"id": m["id"], "name": m["name"]} for m in self._master_packages()]
+
+    def place_master(self, package: int, master: str, name: str | None = None,
+                     x: float = 40, y: float = 40, width: float | None = None,
+                     height: float | None = None) -> dict:
+        """Place a master instance (ReferenceDiagramObject) on the page via the editor pipeline.
+
+        Implemented against the decompiled route but NOT yet verified end-to-end (there is no way
+        to create a master programmatically yet) - not exposed as an MCP tool.
+        """
+        masters = self._master_packages()
+        chosen = next((m for m in masters if m["id"] == master or m["name"] == master), None)
+        if chosen is None:
+            raise AxureError(f"no master {master!r}; available: {[m['name'] for m in masters]}")
+        ref = self.b.ctor("Axure.DocumentModel.Objects.ReferenceDiagramObject",
+                          [{"$h": package}, {"$h": chosen["handle"]}])["$h"]
+        if width is None or height is None:
+            try:
+                size = self.b.get_on(chosen["handle"], "Size")
+                width = width if width is not None else float(self.b.get_on(size["$h"], "X"))
+                height = height if height is not None else float(self.b.get_on(size["$h"], "Y"))
+            except (BridgeError, TypeError, KeyError):
+                width = width if width is not None else 200.0
+                height = height if height is not None else 150.0
+        self.set_rect(ref, x, y, width, height)
+        base = name or chosen["name"]
+        candidate, suffix = base, 2
+        while self.find_widget(package, candidate) is not None:
+            candidate = f"{base}{suffix}"
+            suffix += 1
+        self.b.set_on(ref, "Name", candidate)
+        live = self._insert_widget(package, ref, 0, 0)
+        info = self.widget_info(live)
+        info["master"] = chosen["name"]
+        return info
+
     # ---------- page style ----------
 
     def page_style(self, package: int) -> dict:

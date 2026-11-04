@@ -115,6 +115,7 @@ def main():
         ("create_page_d", "axure_create_page", {"name": "PageDelta"}),
         ("list_pages", "axure_list_pages", {}),
         ("page_tree", "axure_page_tree", {}),
+        ("list_masters", "axure_list_masters", {}),
         ("add_btn", "axure_add_widget", {"kind": "button", "name": "btn", "text": "Main",
                                          "x": 60, "y": 60, "width": 160, "height": 44,
                                          "page_name": PAGE_A}),

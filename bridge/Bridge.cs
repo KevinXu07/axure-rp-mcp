@@ -426,12 +426,39 @@ public static class Bridge
     private static JsonNode DismissDialogs(JsonObject req)
     {
         var close = req["close"]?.GetValue<bool>() ?? true;
+        var confirmText = req["confirm"]?.GetValue<string>();
+        var titleFilter = req["title"]?.GetValue<string>();
+        var keyEnter = req["key_enter"]?.GetValue<bool>() ?? false;
+        var attempt = req["attempt"]?.GetValue<int>() ?? 0;
         var list = new JsonArray();
-        foreach (var (handle, title, text) in Dialogs.Find())
+        var targets = titleFilter != null
+            ? Dialogs.FindByTitle(titleFilter)
+            : Dialogs.Find();
+        foreach (var (handle, title, text) in targets)
         {
             list.Add(new JsonObject { ["title"] = title, ["text"] = text });
-            if (close) Dialogs.Close(handle);
-            Log($"dialog {(close ? "closed" : "found")}: {title} :: {text}");
+            if (keyEnter)
+            {
+                if (Dialogs.PressEnter(handle, attempt))
+                    Log($"dialog enter sent (attempt {attempt}): {title} :: {text}");
+                else
+                    Log($"dialog enter failed: {title} :: {text}");
+            }
+            else if (!string.IsNullOrEmpty(confirmText))
+            {
+                if (Dialogs.Confirm(handle, confirmText))
+                    Log($"dialog confirmed with '{confirmText}': {title} :: {text}");
+                else
+                {
+                    Dialogs.Close(handle);
+                    Log($"dialog confirm failed, closed: {title} :: {text}");
+                }
+            }
+            else if (close)
+            {
+                Dialogs.Close(handle);
+                Log($"dialog closed: {title} :: {text}");
+            }
         }
         return list;
     }

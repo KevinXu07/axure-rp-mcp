@@ -1200,6 +1200,13 @@ scope 是 VJs7.cJsP（局部变量作用域集合），字面量值传空集合�
   可从文档视图列表取默认视图），是**下一步最值得试的入口**；
   `QtaH.utXt` 静态空图是官方的"清除图"哨兵。
 - 当前工具口径：Windows 换图 = 删掉控件重建（set_image 的既有提示）。
+- **补充（第五轮，oJ0u 之前的入口也全部试过）**：模型层的所有直写全部被静默吞掉——
+  `jtoq.ltAo(PName.IMAGE, ...)`、链头 `ituB`（WtTU）上的 `YtTy(PName.IMAGE, ...)`、
+  连 `pJ0w(PName.IMAGE, value, true)` 都不改 `widget.Image` 的读回值；描述符
+  `Overridden=true` 但值不变。Axure 自己的设图走**异步命令 `WVz0`（样式事务内）**，
+  桥无法可靠驱动异步命令；`Axure.McpServer.DocumentToolService` 只有
+  `GetWidgetImage`/`GetScreenshot` 读路径。**结论：Windows 原位换图在桥内不可达，
+  维持"删掉重建"口径。**
 
 ### 26.2 组成员编辑（新增 axure_group_add / axure_group_remove）
 
@@ -1234,3 +1241,25 @@ Windows 与 Mac 的 Layer 语义**相反**：Mac 的 Layer 只是成员表（成
   而**创建母版**（17 节的手写 mJsm 载荷过不了序列化校验）是未解的另一半；
   客户端级创建入口在 `M3m.agL`（`new mJsm(nIXw(), eIX8())` + ytOj(id) + 站点节点插入），
   下轮从"新建母版对话框"的 UI 命令入手找它的包装层。
+
+### 26.5 母版创建深挖（第五轮，仍未打通但拼图完整了）
+
+- **正确的调用入口**：`Editor.CreateMaster()`（公开方法，UI 命令 "CreateMaster" 就是它）。
+  它作用于**编辑器的 Selection**——注意 `widget.Selected` 属性赋值**不会**填充编辑器选择，
+  必须走 `editor.Selection.Add(widget)`（`bJ4h.VJ42.Add(kJm7)`）。
+- **对话框**：内部弹自绘的 "Create component" 提示（`Vrr2.Arr7`，400×120，
+  内容是 `DxDrawingControl` 自绘表面——**没有任何 Win32 Edit/Button 子控件**，
+  WM_SETTEXT/BM_CLICK 键击路线不可行）。名字 getter/setter 是公开的
+  `rrr0()/nrrp(string)`，模式是 `Hrrd()/xrrO(MasterMode)`。
+- **跳过对话框的开关**：`ClientSettings.AutoNameMasters = true` 时
+  `EFqs` 的创建流程直接跳过对话框（`IL_063a: if (AutoNameMasters) goto IL_03fd`）——
+  但实测**整个创建静默空转**：返回 true、站点树不变、延迟+保存也不出现组件
+  （三种选择方式：Selected 属性 / Selection.Add 均如此）。
+- **桥侧对话框机制（本轮新增，保留）**：`dismiss` op 支持 `title` 过滤（`Dialogs.FindByTitle`，
+  对自绘对话框可用）、`confirm`（填第一个 Edit + 点默认按钮，对带真 Win32 控件的对话框有效）、
+  `key_enter`（向焦点子窗口/自绘表面发 Enter + 合成鼠标点击）。Python 侧
+  `confirm_dialogs(text, title)` / `press_enter(title, attempt)` 可从第二连接驱动。
+- `ops.masters()`（新工具 `axure_list_masters`）：从站点模型列出母版（id + name），
+  判别与 `page_tree` 一致（非 kJsl 的字典载荷即组件）。
+- `ops.place_master` 已按 26.4 的路由实现但**未验证、不对外暴露**——一旦母版创建打通
+  （或在有母版的文件上验证），即可升级为工具。

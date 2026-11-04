@@ -475,6 +475,12 @@ TOOLS += PAGE_TOOLS + [
         },
     },
     {
+        "name": "axure_list_masters",
+        "description": ("List the document's masters (components) with their ids and names. Masters "
+                        "are created in the Axure UI (right-click the Masters pane)."),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "axure_style_page",
         "description": ("Write page-level style. fill: background colour '#RRGGBB' or '#AARRGGBB' "
                         "(the Page Styles panel's canvas colour)."),
@@ -1372,6 +1378,11 @@ def tool_axure_get_page_style(args: dict) -> dict:
     return _json({"page": page_name, **app.page_style(package)})
 
 
+def tool_axure_list_masters(_args: dict) -> dict:
+    app = _app()
+    return _json({"masters": app.masters()})
+
+
 HANDLERS = {
     "axure_status": tool_axure_status,
     "axure_list_pages": tool_axure_list_pages,
@@ -1417,6 +1428,7 @@ HANDLERS = {
     "axure_group_remove": tool_axure_group_remove,
     "axure_style_page": tool_axure_style_page,
     "axure_get_page_style": tool_axure_get_page_style,
+    "axure_list_masters": tool_axure_list_masters,
 }
 
 
